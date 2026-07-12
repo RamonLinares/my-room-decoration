@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { Loop } from '../core/Loop';
 import { createRenderer, resizeRenderer } from '../core/Renderer';
 
@@ -19,6 +20,7 @@ const CATALOG:CatalogItem[]=[
  {kind:'ottoman',name:'Floor pouffe',category:'furniture',icon:'🧶',note:'Soft woven seat'},
  {kind:'toybox',name:'Old toy chest',category:'furniture',icon:'🧰',note:'Full of possibilities'},
  {kind:'dresser',name:'Mirror dresser',category:'furniture',icon:'🪞',note:'Morning light'},
+ {kind:'birchtable',name:'Light birch table',category:'furniture',icon:'▱',note:'Soft edges, splayed legs'},
  {kind:'sectional',name:'Corner sofa',category:'furniture',icon:'🛋️',note:'Stretch-out seating'},
  {kind:'armchair',name:'Deep armchair',category:'furniture',icon:'💺',note:'A proper reading chair'},
  {kind:'coffeetable',name:'Coffee table',category:'furniture',icon:'▰',note:'Low and useful'},
@@ -61,9 +63,9 @@ const CATALOG:CatalogItem[]=[
  {kind:'cushion',name:'Patchwork cushion',category:'decor',icon:'🟥',note:'One more soft thing'},
 ];
 const PALETTE=[0xb75e4b,0x6f8875,0xd7a34c,0x66858d,0xd8a69a,0x8b6048];
-const SUPPORT_KINDS=new Set(['bed','canopy','sofa','sectional','chair','armchair','desk','deskset','coffeetable','nightstand','dresser','filing','toybox','shelf','tallbookcase','lowbookcase','cubestorage']);
-const SUPPORT_HEIGHTS:Record<string,number>={bed:1.29,canopy:1.1,sofa:1.2,sectional:1.14,chair:1.2,armchair:1.25,desk:1.9,deskset:1.82,coffeetable:.88,nightstand:1.48,dresser:1.86,filing:1.72,toybox:1.34,shelf:2.24,tallbookcase:4.25,lowbookcase:1.75,cubestorage:2.55};
-const FLOOR_ONLY_KINDS=new Set(['bed','canopy','desk','deskset','chair','deskchair','armchair','shelf','sofa','sectional','wardrobe','nightstand','ottoman','toybox','dresser','filing','coffeetable','tallbookcase','lowbookcase','cubestorage','roundrug','mirror']);
+const SUPPORT_KINDS=new Set(['bed','canopy','sofa','sectional','chair','armchair','desk','deskset','birchtable','coffeetable','nightstand','dresser','filing','toybox','shelf','tallbookcase','lowbookcase','cubestorage']);
+const SUPPORT_HEIGHTS:Record<string,number>={bed:1.29,canopy:1.1,sofa:1.2,sectional:1.14,chair:1.2,armchair:1.25,desk:1.9,deskset:1.82,birchtable:1.95,coffeetable:.88,nightstand:1.48,dresser:1.86,filing:1.72,toybox:1.34,shelf:2.24,tallbookcase:4.25,lowbookcase:1.75,cubestorage:2.55};
+const FLOOR_ONLY_KINDS=new Set(['bed','canopy','desk','deskset','birchtable','chair','deskchair','armchair','shelf','sofa','sectional','wardrobe','nightstand','ottoman','toybox','dresser','filing','coffeetable','tallbookcase','lowbookcase','cubestorage','roundrug','mirror']);
 
 export class Game{
  private renderer:THREE.WebGLRenderer; private scene=new THREE.Scene(); private camera=new THREE.PerspectiveCamera(36,1,.1,100); private controls:OrbitControls;
@@ -85,6 +87,7 @@ export class Game{
  private makeItem(d:ItemData){const g=new THREE.Group();g.userData.itemId=d.id;g.name=d.name;const mat=new THREE.MeshStandardMaterial({color:d.color,roughness:.72});const cream=new THREE.MeshStandardMaterial({color:0xf1dfc1,roughness:.9});const dark=new THREE.MeshStandardMaterial({color:0x5a392b,roughness:.58});const add=(geo:THREE.BufferGeometry,m:THREE.Material,x:number,y:number,z:number,rx=0,ry=0,rz=0)=>{const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);o.rotation.set(rx,ry,rz);o.castShadow=true;o.receiveShadow=true;g.add(o);return o};
  if(d.kind==='bed'){add(new THREE.BoxGeometry(3,.55,4),dark,0,.45,0);add(new THREE.BoxGeometry(2.8,.45,3.65),cream,0,.95,.08);add(new THREE.BoxGeometry(2.72,.08,2.28),mat,0,1.22,.66);add(new THREE.BoxGeometry(1.12,.22,.62),cream,-.62,1.34,-1.08);add(new THREE.BoxGeometry(1.12,.22,.62),cream,.62,1.34,-1.08);}
  else if(d.kind==='desk'){add(new THREE.BoxGeometry(2.8,.22,1.4),mat,0,1.75,0);for(const x of [-1.15,1.15])for(const z of [-.5,.5])add(new THREE.CylinderGeometry(.11,.14,1.65,8),dark,x,.85,z);add(new THREE.BoxGeometry(1.2,.1,.85),cream,-.35,1.92,0,.0,0,-.08)}
+ else if(d.kind==='birchtable'){const birch=new THREE.MeshStandardMaterial({color:0xe8c99c,roughness:.68,metalness:0});const grain=new THREE.MeshBasicMaterial({color:0xcda97b,transparent:true,opacity:.18});add(new RoundedBoxGeometry(3.8,.18,2.2,4,.12),birch,0,1.86,0);add(new THREE.BoxGeometry(3.35,.25,.12),birch,0,1.68,.88);add(new THREE.BoxGeometry(3.35,.25,.12),birch,0,1.68,-.88);add(new THREE.BoxGeometry(.12,.25,1.65),birch,1.62,1.68,0);add(new THREE.BoxGeometry(.12,.25,1.65),birch,-1.62,1.68,0);for(const x of [-1.58,1.58])for(const z of [-.74,.74])add(new THREE.CylinderGeometry(.11,.16,1.72,8),birch,x,.86,z,-Math.sign(z)*.085,0,Math.sign(x)*.085);for(let i=0;i<7;i++){const line=add(new THREE.BoxGeometry(3.1-(i%2)*.35,.008,.01+(i%3)*.004),grain,(i%2-.5)*.18,1.956,-.73+i*.23);line.rotation.y=(i%3-1)*.009}}
  else if(d.kind==='chair'){add(new THREE.BoxGeometry(1.4,.25,1.4),mat,0,1.05,0);add(new THREE.BoxGeometry(1.4,1.8,.22),mat,0,1.85,.58,-.1);for(const x of [-.5,.5])for(const z of [-.5,.5])add(new THREE.CylinderGeometry(.1,.13,1,8),dark,x,.5,z)}
  else if(d.kind==='shelf'){for(let i=0;i<3;i++)add(new THREE.BoxGeometry(2.5,.18,.8),mat,0,.45+i*.8,0);for(const x of [-1.1,1.1])add(new THREE.BoxGeometry(.18,2.2,.8),dark,x,1.25,0)}
  else if(d.kind==='lamp'){add(new THREE.CylinderGeometry(.5,.65,.18,20),dark,0,.1,0);add(new THREE.CylinderGeometry(.07,.09,1.8,10),dark,0,1,0);add(new THREE.CylinderGeometry(.34,.72,.7,20,1,true),mat,0,2,0);const bulb=add(new THREE.SphereGeometry(.18,16,12),new THREE.MeshBasicMaterial({color:0xffd285}),0,1.88,0);bulb.userData.glow=true}
@@ -149,7 +152,7 @@ export class Game{
  private load(){try{const raw=localStorage.getItem('my-little-room-v1');const saved=raw===null?null:JSON.parse(raw) as ItemData[]|null;if(Array.isArray(saved)){this.data=saved;this.rebuild();return}}catch{};const starters=[['bed',-3.8,-2.4],['lamp',-5,-3.8],['desk',3.7,-3.8],['plant',4.8,-4.1],['teddy',-1.2,2.2],['books',2,2.7]] as const;for(const [kind,x,z] of starters){const c=CATALOG.find(q=>q.kind===kind)!;this.add(c,{x,z},false)}this.history=[];this.updateButtons()}
  private toggleTime(){this.evening=!this.evening;(this.scene.background as THREE.Color).setHex(this.evening?0x313747:0x9fa9a1);(this.scene.fog as THREE.Fog).color.setHex(this.evening?0x42404a:0xb9b4a5);if(this.keyLight)this.keyLight.intensity=this.evening?42:80;if(this.lampLight)this.lampLight.intensity=this.evening?14:5;(document.querySelector('#time-toggle')!).textContent=this.evening?'☾ Evening':'☀ Afternoon';this.audio('chime')}
  private resetCamera(){this.camera.position.set(12,10,15);this.controls.target.set(0,2.3,0);this.controls.update()}
- private audio(type:string){if(type==='begin'){this.ambience.loop=true;this.ambience.volume=.16;void this.ambience.play()}const A=window.AudioContext||(window as any).webkitAudioContext;if(!A)return;const ctx=new A();const o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';o.frequency.value=type==='remove'?190:type==='place'?420:620;g.gain.setValueAtTime(.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.045,ctx.currentTime+.01);g.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.32);o.connect(g).connect(ctx.destination);o.start();o.stop(ctx.currentTime+.35)}
+ private audio(type:string){if(type==='begin'){this.ambience.loop=true;this.ambience.volume=.16;void this.ambience.play().catch(()=>{})}const A=window.AudioContext||(window as any).webkitAudioContext;if(!A)return;const ctx=new A();const o=ctx.createOscillator(),g=ctx.createGain();o.type='sine';o.frequency.value=type==='remove'?190:type==='place'?420:620;g.gain.setValueAtTime(.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.045,ctx.currentTime+.01);g.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.32);o.connect(g).connect(ctx.destination);o.start();o.stop(ctx.currentTime+.35)}
  private update(_d:number,e:number){resizeRenderer(this.renderer,this.camera,matchMedia('(pointer:coarse)').matches?1.35:1.7);this.controls.update();if(this.dust){this.dust.rotation.y=e*.015;this.dust.position.y=Math.sin(e*.2)*.04}this.items.forEach(g=>{g.traverse(o=>{if(o.userData.glow)o.scale.setScalar(1+Math.sin(e*2)*.06)})});this.publish()}
  private publish(){const info=this.renderer.info.render;window.__THREE_GAME_DIAGNOSTICS__={frame:(window.__THREE_GAME_DIAGNOSTICS__?.frame||0)+1,fps:0,frameTimeMs:0,state:this.selected?'editing':'decorating',player:{position:{x:this.selected?.position.x||0,y:0,z:this.selected?.position.z||0}},entities:{pickups:this.data.length,total:this.data.length+1},renderer:{calls:info.calls,triangles:info.triangles,geometries:this.renderer.info.memory.geometries,textures:this.renderer.info.memory.textures}}}
 }
