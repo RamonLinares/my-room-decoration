@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Loop } from '../core/Loop';
 import { createRenderer, resizeRenderer } from '../core/Renderer';
 
-type Category='beds'|'furniture'|'light'|'decor'|'keepsake'|'plant';
+type Category='beds'|'furniture'|'workspace'|'light'|'decor'|'keepsake'|'plant';
 type ItemData={id:string;kind:string;name:string;category:Category;x:number;y?:number;z:number;rot:number;color:number;scale?:number;supportId?:string};
 type CatalogItem={kind:string;name:string;category:Category;icon:string;note:string};
 
@@ -19,6 +19,21 @@ const CATALOG:CatalogItem[]=[
  {kind:'ottoman',name:'Floor pouffe',category:'furniture',icon:'🧶',note:'Soft woven seat'},
  {kind:'toybox',name:'Old toy chest',category:'furniture',icon:'🧰',note:'Full of possibilities'},
  {kind:'dresser',name:'Mirror dresser',category:'furniture',icon:'🪞',note:'Morning light'},
+ {kind:'sectional',name:'Corner sofa',category:'furniture',icon:'🛋️',note:'Stretch-out seating'},
+ {kind:'armchair',name:'Deep armchair',category:'furniture',icon:'💺',note:'A proper reading chair'},
+ {kind:'coffeetable',name:'Coffee table',category:'furniture',icon:'▰',note:'Low and useful'},
+ {kind:'tallbookcase',name:'Tall bookcase',category:'furniture',icon:'📚',note:'A whole wall of books'},
+ {kind:'lowbookcase',name:'Low bookcase',category:'furniture',icon:'📖',note:'Books within reach'},
+ {kind:'cubestorage',name:'Cube storage',category:'furniture',icon:'▦',note:'Nine tidy cubbies'},
+ {kind:'deskchair',name:'Rolling desk chair',category:'workspace',icon:'🪑',note:'Ready for homework'},
+ {kind:'desktop',name:'Desktop computer',category:'workspace',icon:'🖥️',note:'The whole setup'},
+ {kind:'monitor',name:'Computer monitor',category:'workspace',icon:'🖥️',note:'A bright little screen'},
+ {kind:'laptop',name:'Open laptop',category:'workspace',icon:'💻',note:'Work anywhere'},
+ {kind:'keyboard',name:'Keyboard & mouse',category:'workspace',icon:'⌨️',note:'Clickety-clack'},
+ {kind:'speakers',name:'Stereo speakers',category:'workspace',icon:'🔊',note:'A pair for the desk'},
+ {kind:'printer',name:'Home printer',category:'workspace',icon:'🖨️',note:'Paper included'},
+ {kind:'filing',name:'Filing cabinet',category:'workspace',icon:'🗄️',note:'Three neat drawers'},
+ {kind:'deskset',name:'Studio desk',category:'workspace',icon:'🖥️',note:'Wide modern workspace'},
  {kind:'lamp',name:'Honey lamp',category:'light',icon:'💡',note:'Warm evening glow'},
  {kind:'fairy',name:'Fairy lights',category:'light',icon:'✨',note:'Tiny constellations'},
  {kind:'lantern',name:'Paper lantern',category:'light',icon:'🏮',note:'A peachy glow'},
@@ -46,9 +61,9 @@ const CATALOG:CatalogItem[]=[
  {kind:'cushion',name:'Patchwork cushion',category:'decor',icon:'🟥',note:'One more soft thing'},
 ];
 const PALETTE=[0xb75e4b,0x6f8875,0xd7a34c,0x66858d,0xd8a69a,0x8b6048];
-const SUPPORT_KINDS=new Set(['bed','canopy','sofa','chair','desk','nightstand','dresser','toybox','shelf']);
-const SUPPORT_HEIGHTS:Record<string,number>={bed:1.29,canopy:1.1,sofa:1.2,chair:1.2,desk:1.9,nightstand:1.48,dresser:1.86,toybox:1.34,shelf:2.24};
-const FLOOR_ONLY_KINDS=new Set(['bed','canopy','desk','chair','shelf','sofa','wardrobe','nightstand','ottoman','toybox','dresser','roundrug','mirror']);
+const SUPPORT_KINDS=new Set(['bed','canopy','sofa','sectional','chair','armchair','desk','deskset','coffeetable','nightstand','dresser','filing','toybox','shelf','tallbookcase','lowbookcase','cubestorage']);
+const SUPPORT_HEIGHTS:Record<string,number>={bed:1.29,canopy:1.1,sofa:1.2,sectional:1.14,chair:1.2,armchair:1.25,desk:1.9,deskset:1.82,coffeetable:.88,nightstand:1.48,dresser:1.86,filing:1.72,toybox:1.34,shelf:2.24,tallbookcase:4.25,lowbookcase:1.75,cubestorage:2.55};
+const FLOOR_ONLY_KINDS=new Set(['bed','canopy','desk','deskset','chair','deskchair','armchair','shelf','sofa','sectional','wardrobe','nightstand','ottoman','toybox','dresser','filing','coffeetable','tallbookcase','lowbookcase','cubestorage','roundrug','mirror']);
 
 export class Game{
  private renderer:THREE.WebGLRenderer; private scene=new THREE.Scene(); private camera=new THREE.PerspectiveCamera(36,1,.1,100); private controls:OrbitControls;
@@ -80,6 +95,14 @@ export class Game{
  else if(d.kind==='books'){for(let i=0;i<4;i++)add(new THREE.BoxGeometry(1.25,.18,.8),new THREE.MeshStandardMaterial({color:PALETTE[(i+2)%PALETTE.length],roughness:.85}),0,.12+i*.2,0,0,(i-1.5)*.05,(i-1.5)*.03)}
  else if(d.kind==='canopy'){add(new THREE.BoxGeometry(3,.5,4),dark,0,.4,0);add(new THREE.BoxGeometry(2.8,.42,3.7),cream,0,.85,0);for(const x of [-1.35,1.35])for(const z of [-1.8,1.8])add(new THREE.CylinderGeometry(.05,.07,3.3,8),dark,x,1.9,z);add(new THREE.BoxGeometry(2.8,.12,3.8),mat,0,3.5,0)}
  else if(d.kind==='sofa'){add(new THREE.BoxGeometry(3,.55,1.5),dark,0,.45,0);add(new THREE.BoxGeometry(2.7,.5,1.25),mat,0,.9,0);add(new THREE.BoxGeometry(2.8,1.35,.4),mat,0,1.5,.55);for(const x of [-1.35,1.35])add(new THREE.BoxGeometry(.35,.8,1.35),mat,x,.95,0)}
+ else if(d.kind==='sectional'){add(new THREE.BoxGeometry(3.6,.48,1.5),dark,0,.4,0);add(new THREE.BoxGeometry(3.25,.48,1.25),mat,0,.86,0);add(new THREE.BoxGeometry(3.45,1.25,.35),mat,0,1.48,.56);add(new THREE.BoxGeometry(1.25,.48,2.65),mat,1.18,.86,-.68);for(const x of [-1.65,1.65])add(new THREE.BoxGeometry(.3,.72,1.3),mat,x,.98,0)}
+ else if(d.kind==='armchair'){add(new THREE.BoxGeometry(1.65,.5,1.55),dark,0,.42,0);add(new THREE.BoxGeometry(1.35,.5,1.25),mat,0,.92,0);add(new THREE.BoxGeometry(1.45,1.5,.38),mat,0,1.62,.52,-.08);for(const x of [-.78,.78])add(new THREE.BoxGeometry(.28,.82,1.35),mat,x,1,0)}
+ else if(d.kind==='coffeetable'){add(new THREE.BoxGeometry(2.6,.2,1.5),mat,0,.78,0);for(const x of [-1.05,1.05])for(const z of [-.5,.5])add(new THREE.CylinderGeometry(.09,.12,.75,8),dark,x,.38,z);add(new THREE.BoxGeometry(2.2,.1,1.1),dark,0,.28,0)}
+ else if(d.kind==='tallbookcase'||d.kind==='lowbookcase'){const tall=d.kind==='tallbookcase',h=tall?4.2:1.7,w=tall?2.4:3.3;add(new THREE.BoxGeometry(w,h,.72),mat,0,h/2,0);for(let i=0;i<(tall?5:2);i++){const y=.45+i*(tall?.78:.72);add(new THREE.BoxGeometry(w-.2,.1,.75),dark,0,y,.02);for(let j=0;j<(tall?5:7);j++){const bh=.35+(j%3)*.12;add(new THREE.BoxGeometry(.18,bh,.5),new THREE.MeshStandardMaterial({color:PALETTE[(i+j)%PALETTE.length],roughness:.82}),-w/2+.3+j*(w-.55)/(tall?4:6),y+.08+bh/2,.12)}}}
+ else if(d.kind==='cubestorage'){add(new THREE.BoxGeometry(3,2.5,.75),mat,0,1.25,0);for(const x of [-.5,.5])add(new THREE.BoxGeometry(.1,2.3,.8),dark,x,1.25,.02);for(const y of [.83,1.67])add(new THREE.BoxGeometry(2.8,.1,.8),dark,0,y,.02);for(let i=0;i<4;i++)add(new THREE.BoxGeometry(.65,.55,.55),new THREE.MeshStandardMaterial({color:PALETTE[(i+1)%PALETTE.length],roughness:.9}),-.92+(i%3)*.92,.38+Math.floor(i/3)*.82,.14)}
+ else if(d.kind==='deskchair'){add(new THREE.CylinderGeometry(.65,.7,.18,20),mat,0,1.05,0);add(new THREE.BoxGeometry(1.25,1.35,.22),mat,0,1.75,.5,-.12);add(new THREE.CylinderGeometry(.08,.1,.85,8),dark,0,.55,0);for(let i=0;i<5;i++){const a=i*Math.PI*2/5;add(new THREE.BoxGeometry(.65,.07,.09),dark,Math.cos(a)*.3,.12,Math.sin(a)*.3,0,-a,0);add(new THREE.SphereGeometry(.09,8,6),dark,Math.cos(a)*.62,.08,Math.sin(a)*.62)}}
+ else if(d.kind==='filing'){add(new THREE.BoxGeometry(1.4,1.7,1.15),mat,0,.85,0);for(let i=0;i<3;i++){add(new THREE.BoxGeometry(1.18,.45,.07),dark,0,.4+i*.52,.61);add(new THREE.BoxGeometry(.34,.05,.08),cream,0,.4+i*.52,.68)}}
+ else if(d.kind==='deskset'){add(new THREE.BoxGeometry(3.7,.18,1.5),mat,0,1.72,0);for(const x of [-1.55,1.55])add(new THREE.BoxGeometry(.18,1.65,1.25),dark,x,.86,0);add(new THREE.BoxGeometry(1.05,1.2,.15),dark,0,2.42,.12);add(new THREE.BoxGeometry(.88,.95,.04),new THREE.MeshBasicMaterial({color:0x8ab8bd}),0,2.42,.22);add(new THREE.BoxGeometry(1.6,.08,.55),cream,0,1.86,-.08)}
  else if(d.kind==='wardrobe'){add(new THREE.BoxGeometry(2.7,3.8,1.15),mat,0,1.9,0);add(new THREE.BoxGeometry(.06,3.45,1.0),dark,0,2,.59);for(const x of [-.22,.22])add(new THREE.SphereGeometry(.07,10,8),cream,x,2,.65);add(new THREE.BoxGeometry(2.85,.18,1.3),dark,0,.12,0)}
  else if(d.kind==='nightstand'){add(new THREE.BoxGeometry(1.35,1.25,1.1),mat,0,.82,0);add(new THREE.BoxGeometry(1.15,.08,.08),dark,0,1,.58);add(new THREE.SphereGeometry(.06,8,6),cream,0,1,.65);for(const x of [-.5,.5])for(const z of [-.4,.4])add(new THREE.CylinderGeometry(.06,.08,.35,8),dark,x,.2,z)}
  else if(d.kind==='ottoman'){add(new THREE.CylinderGeometry(.85,.9,.6,20),mat,0,.32,0);add(new THREE.TorusGeometry(.7,.035,8,24),cream,0,.62,0,Math.PI/2)}
@@ -90,6 +113,12 @@ export class Game{
  else if(d.kind==='candles'){for(let i=0;i<3;i++){const x=(i-1)*.38,h=.55+i*.22;add(new THREE.CylinderGeometry(.12,.14,h,12),cream,x,h/2,0);const f=add(new THREE.SphereGeometry(.08,10,7),new THREE.MeshBasicMaterial({color:0xffa43b}),x,h+.08,0);f.scale.y=1.6;f.userData.glow=true}}
  else if(d.kind==='lavalamp'){add(new THREE.CylinderGeometry(.38,.5,.24,16),dark,0,.12,0);add(new THREE.CylinderGeometry(.25,.42,1.2,16),new THREE.MeshPhysicalMaterial({color:d.color,transparent:true,opacity:.75,roughness:.12}),0,.82,0);add(new THREE.SphereGeometry(.14,12,8),new THREE.MeshBasicMaterial({color:0xff9c66}),0,.85,0)}
  else if(d.kind==='camera'){add(new THREE.BoxGeometry(1.2,.75,.45),mat,0,.52,0);add(new THREE.CylinderGeometry(.28,.33,.32,18),dark,0,.52,.35,Math.PI/2);add(new THREE.CylinderGeometry(.19,.19,.34,18),new THREE.MeshPhysicalMaterial({color:0x90b7bd,metalness:.4,roughness:.15}),0,.52,.52,Math.PI/2);add(new THREE.BoxGeometry(.3,.16,.2),cream,.32,.98,0)}
+ else if(d.kind==='monitor'){add(new THREE.BoxGeometry(1.65,1.1,.16),dark,0,1,.05);add(new THREE.BoxGeometry(1.45,.88,.035),new THREE.MeshBasicMaterial({color:0x83afb6}),0,1,.15);add(new THREE.CylinderGeometry(.07,.1,.52,8),dark,0,.28,0);add(new THREE.BoxGeometry(.85,.08,.55),dark,0,.05,0)}
+ else if(d.kind==='laptop'){add(new THREE.BoxGeometry(1.55,.08,1.05),dark,0,.06,0);add(new THREE.BoxGeometry(1.5,.9,.08),dark,0,.52,-.47,-.18);add(new THREE.BoxGeometry(1.32,.72,.025),new THREE.MeshBasicMaterial({color:0x91bbc1}),0,.53,-.53,-.18);for(let i=0;i<5;i++)add(new THREE.BoxGeometry(1.1,.018,.025),cream,0,.11,.18+i*.12)}
+ else if(d.kind==='keyboard'){add(new THREE.BoxGeometry(1.55,.1,.58),cream,0,.06,0);for(let i=0;i<5;i++)for(let j=0;j<10;j++)add(new THREE.BoxGeometry(.1,.025,.07),dark,-.55+j*.12,.13,-.2+i*.1);add(new THREE.SphereGeometry(.2,12,8),mat,1.05,.14,.02)}
+ else if(d.kind==='speakers'){for(const x of [-.55,.55]){add(new THREE.BoxGeometry(.55,1,.45),dark,x,.5,0);add(new THREE.CircleGeometry(.17,18),mat,x,.62,.231);add(new THREE.CircleGeometry(.09,14),cream,x,.28,.235)}}
+ else if(d.kind==='printer'){add(new THREE.BoxGeometry(1.5,.72,1.1),mat,0,.38,0);add(new THREE.BoxGeometry(1.18,.12,.75),dark,0,.8,-.08);add(new THREE.BoxGeometry(.95,.035,.7),cream,0,.95,-.18,-.18);add(new THREE.BoxGeometry(.8,.12,.55),dark,0,.28,.55,.2)}
+ else if(d.kind==='desktop'){add(new THREE.BoxGeometry(.65,1.25,.75),dark,1.15,.65,0);add(new THREE.BoxGeometry(1.65,1.1,.16),dark,-.2,1.05,.05);add(new THREE.BoxGeometry(1.43,.87,.035),new THREE.MeshBasicMaterial({color:0x7faeb5}),-.2,1.05,.15);add(new THREE.CylinderGeometry(.06,.09,.45,8),dark,-.2,.35,0);add(new THREE.BoxGeometry(.82,.07,.5),dark,-.2,.08,0);add(new THREE.BoxGeometry(1.35,.08,.48),cream,-.15,.06,.7)}
  else if(d.kind==='record'){add(new THREE.BoxGeometry(1.55,.3,1.3),mat,0,.2,0);add(new THREE.CylinderGeometry(.48,.48,.05,32),dark,-.18,.39,0);add(new THREE.CylinderGeometry(.08,.08,.08,16),cream,-.18,.43,0);add(new THREE.BoxGeometry(.08,.06,.72),cream,.48,.48,.05,0,.25,.12)}
  else if(d.kind==='musicbox'){add(new THREE.BoxGeometry(1.25,.65,.9),mat,0,.38,0);add(new THREE.BoxGeometry(1.35,.12,1),dark,0,.77,0);const dancer=add(new THREE.CylinderGeometry(.08,.12,.55,10),cream,0,1.12,0);dancer.rotation.z=.08}
  else if(d.kind==='snowglobe'){add(new THREE.CylinderGeometry(.42,.52,.28,18),dark,0,.14,0);add(new THREE.SphereGeometry(.48,20,15),new THREE.MeshPhysicalMaterial({color:0xc6e0df,transparent:true,opacity:.48,roughness:.05}),0,.68,0);add(new THREE.ConeGeometry(.18,.5,8),mat,0,.62,0)}
