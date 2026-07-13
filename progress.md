@@ -7,4 +7,5 @@ Original prompt: Build and deploy a polished, playable “My Room decoration” 
 - 2026-07-13: Added reference-based procedural BILLY and PAX/KOMPLEMENT storage props. BILLY includes the six-bay rhythm, back, plinth, pin holes, and books; PAX includes an open wardrobe bay, rail, framed drawer fronts, runners, and an articulated pulled-out drawer.
 - 2026-07-13: Added live inventory search and a compact collapse state that keeps the panel header accessible. Search automatically broadens to All categories and keyboard shortcuts are suppressed while typing.
 - 2026-07-13: Rebuilt the keyboard set's mouse with a rounded shell, base, split buttons, center seam, and scroll wheel. Re-anchored chair and armchair backs at the seat-back junction so their tops lean rearward around a believable pivot.
+- 2026-07-13: Applied the same seat-level rearward back pivot to the rolling desk chair.
 - TODO: Continue checking dense-room placement as the catalog grows; consider a temporary placement silhouette if rooms become extremely full.
