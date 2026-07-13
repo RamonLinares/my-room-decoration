@@ -8,4 +8,5 @@ Original prompt: Build and deploy a polished, playable “My Room decoration” 
 - 2026-07-13: Added live inventory search and a compact collapse state that keeps the panel header accessible. Search automatically broadens to All categories and keyboard shortcuts are suppressed while typing.
 - 2026-07-13: Rebuilt the keyboard set's mouse with a rounded shell, base, split buttons, center seam, and scroll wheel. Re-anchored chair and armchair backs at the seat-back junction so their tops lean rearward around a believable pivot.
 - 2026-07-13: Applied the same seat-level rearward back pivot to the rolling desk chair.
+- 2026-07-13: Removed the redundant inventory collapse control and restyled close buttons. Added persistent room width/depth sliders with cozy, square, wide, and deep presets. Rebuilt room architecture parametrically and replaced fixed drag clamps with object-footprint-aware boundaries so furniture can sit flush against the picture wall and back wall.
 - TODO: Continue checking dense-room placement as the catalog grows; consider a temporary placement silhouette if rooms become extremely full.
