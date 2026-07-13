@@ -4,4 +4,5 @@ Original prompt: Build and deploy a polished, playable “My Room decoration” 
 - 2026-07-12: Made selection explicit with a warm, pulsing additive outline around every mesh composing the selected object, plus a subtle emissive lift.
 - 2026-07-12: Added Lower/Raise controls (0.2-unit steps, 0–6 range) and R/F keyboard shortcuts. Raising support furniture carries supported objects with it; directly adjusting a supported prop detaches it for free height placement.
 - 2026-07-12: Fixed horizontal dragging to preserve custom object height. Dragging now occurs on the elevation where the object started instead of always projecting onto the floor.
+- 2026-07-13: Added reference-based procedural BILLY and PAX/KOMPLEMENT storage props. BILLY includes the six-bay rhythm, back, plinth, pin holes, and books; PAX includes an open wardrobe bay, rail, framed drawer fronts, runners, and an articulated pulled-out drawer.
 - TODO: Continue checking dense-room placement as the catalog grows; consider a temporary placement silhouette if rooms become extremely full.
