@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
+    "lint:css": "stylelint \"src/**/*.css\"",
+    "consolidate:css": "postcss src/styles.css -o src/styles.css",
     "preview": "vite preview --host 127.0.0.1",
     "test": "playwright test",
     "verify:visual": "playwright test tests/visual.spec.ts",
@@ -16,11 +18,15 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.60.0",
     "@types/node": "^25.9.0",
     "@types/pngjs": "^6.0.5",
     "@types/three": "^0.184.1",
     "pngjs": "^7.0.0",
+    "postcss-cli": "^11.0.1",
+    "postcss-combine-media-query": "^2.1.0",
+    "stylelint": "^17.14.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.13"
   }

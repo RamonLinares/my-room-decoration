@@ -30,6 +30,7 @@ import {
   buildArchitecturalDoor,
   buildArchitecturalExtension,
 } from "../assets/modelFactories/ArchitecturalExtensionFactory";
+import { SurfaceController } from "../ui/SurfaceController";
 
 type Category =
   | "beds"
@@ -40,6 +41,10 @@ type Category =
   | "keepsake"
   | "plant"
   | "realroom";
+type CatalogFilter = Category | "all" | "recent" | "favorites";
+type CatalogPlacementFilter = "all" | "floor" | "surface" | "wall" | "ceiling";
+type CatalogSizeFilter = "all" | "small" | "medium" | "large";
+type CatalogSort = "catalog" | "recent" | "name";
 type ItemData = {
   id: string;
   kind: string;
@@ -66,6 +71,13 @@ type CatalogItem = {
 type RoomShape = "rectangle" | "l" | "t" | "u";
 type RoomRect = { minX: number; maxX: number; minZ: number; maxZ: number };
 type RoomWallSide = "back" | "front" | "left" | "right";
+type PlacementPreview = {
+  catalog: CatalogItem;
+  data: ItemData;
+  group: THREE.Group;
+  marker: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  valid: boolean;
+};
 type ImportedDesign = {
   name: string;
   width: number;
@@ -562,6 +574,8 @@ const FLOOR_ONLY_KINDS = new Set([
 ]);
 
 export class Game {
+  private readonly surfaces: SurfaceController;
+  private readonly compactToolsQuery = matchMedia("(max-width: 899px)");
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
@@ -575,14 +589,22 @@ export class Game {
   private items = new Map<string, THREE.Group>();
   private data: ItemData[] = [];
   private selected?: THREE.Group;
+  private placement?: PlacementPreview;
   private drag = false;
+  private dragValid = true;
   private dragOffset = new THREE.Vector3();
   private dragHeight = 0;
   private history: ItemData[][] = [];
   private future: ItemData[][] = [];
   private touches = new Map<number, PointerEvent>();
   private pinchStart = 0;
-  private pinchScale = 1;
+  private pinchCameraDistance = 0;
+  private pendingTouch?: {
+    pointerId: number;
+    startX: number;
+    startY: number;
+    group: THREE.Group;
+  };
   private floorTex?: THREE.Texture;
   private evening = false;
   private keyLight?: THREE.SpotLight;
@@ -609,9 +631,26 @@ export class Game {
   private roomFloorStyle: FloorFinishStyle = "planks";
   private roomName = "A room of your own";
   private muted = false;
+  private gridSnap = false;
   private saveTimer = 0;
-  private catalogCategory: Category | "all" = "all";
+  private frameTimes: number[] = [];
+  private diagnosticsObjects: ThreeGameDiagnostics["editor"]["objects"] = [];
+  private diagnosticsObjectsUpdatedAt = 0;
+  private readonly diagnosticsProjection = new THREE.Vector3();
+  private catalogCategory: CatalogFilter = "all";
   private catalogQuery = "";
+  private catalogPlacement: CatalogPlacementFilter = "all";
+  private catalogSize: CatalogSizeFilter = "all";
+  private catalogSort: CatalogSort = "catalog";
+  private favoriteKinds = new Set<string>(
+    JSON.parse(localStorage.getItem("my-little-room-favorites-v1") ?? "[]") as string[],
+  );
+  private recentKinds: string[] = JSON.parse(
+    localStorage.getItem("my-little-room-recent-v1") ?? "[]",
+  ) as string[];
+  private catalogThumbnailRenderer?: THREE.WebGLRenderer;
+  private catalogThumbnailObserver?: IntersectionObserver;
+  private catalogThumbnailCache = new Map<string, string>();
   private photoBlob?: Blob;
   private photoUrl?: string;
   private photoCaptureId = 0;
@@ -630,10 +669,14 @@ export class Game {
     target: THREE.Vector3;
     fov: number;
   };
+  private editorSelectedId?: string;
   private ambience = new Audio(
     `${import.meta.env.BASE_URL}assets/audio/room-memory-loop.mp3`,
   );
   constructor(private canvas: HTMLCanvasElement) {
+    this.surfaces = new SurfaceController(
+      document.querySelector<HTMLElement>("#app")!,
+    );
     this.renderer = createRenderer(canvas);
     this.renderer.toneMappingExposure = 1.12;
     this.camera.position.set(12, 10, 15);
@@ -659,6 +702,8 @@ export class Game {
     this.loop.stop();
     this.controls.dispose();
     this.renderer.dispose();
+    this.catalogThumbnailObserver?.disconnect();
+    this.catalogThumbnailRenderer?.dispose();
     if (this.photoUrl) URL.revokeObjectURL(this.photoUrl);
     clearTimeout(this.saveTimer);
   }
@@ -680,7 +725,7 @@ export class Game {
     this.lampLight.position.set(-4, 4, -3);
     this.scene.add(this.lampLight);
     this.floorTex = new THREE.TextureLoader().load(
-      `${import.meta.env.BASE_URL}assets/rug-memory.png`,
+      `${import.meta.env.BASE_URL}assets/rug-memory.webp`,
     );
     this.floorTex.colorSpace = THREE.SRGBColorSpace;
     this.rebuildRoom();
@@ -1213,83 +1258,156 @@ export class Game {
   }
   private bindUI() {
     const $ = (s: string) => document.querySelector<HTMLElement>(s)!;
-    const catalog = $("#catalog"),
-      roomPanel = $("#room-panel"),
-      filePanel = $("#file-panel"),
-      widthInput = $("#room-width") as HTMLInputElement,
+    const widthInput = $("#room-width") as HTMLInputElement,
       depthInput = $("#room-depth") as HTMLInputElement,
       shapeWidthInput = $("#shape-width") as HTMLInputElement,
       shapeDepthInput = $("#shape-depth") as HTMLInputElement;
-    const roomName = $("#room-name");
-    let roomNameBeforeEdit = this.roomName;
+    const roomName = $("#room-name"),
+      roomNameInput = $("#room-name-input") as HTMLInputElement,
+      renameForm = $("#rename-form") as HTMLFormElement,
+      renameButton = $("#rename-room") as HTMLButtonElement,
+      openCatalog = $("#open-catalog") as HTMLButtonElement,
+      openRoom = $("#open-room") as HTMLButtonElement,
+      openFiles = $("#open-files") as HTMLButtonElement,
+      openPhoto = $("#open-photo") as HTMLButtonElement,
+      openHelp = $("#open-help") as HTMLButtonElement,
+      moreToggle = $("#more-toggle") as HTMLButtonElement;
+    this.surfaces.register("catalog", openCatalog, {
+      modal: () => this.compactToolsQuery.matches,
+      onRequestClose: () => this.surfaces.close("catalog"),
+    });
+    this.surfaces.register("room-panel", openRoom, {
+      modal: () => this.compactToolsQuery.matches,
+      onRequestClose: () => this.surfaces.close("room-panel"),
+    });
+    this.surfaces.register("file-panel", openFiles, {
+      modal: () => this.compactToolsQuery.matches,
+      onRequestClose: () => this.surfaces.close("file-panel"),
+    });
+    this.surfaces.register("secondary-actions", moreToggle, {
+      modal: () => this.compactToolsQuery.matches,
+      onRequestClose: () => this.surfaces.close("secondary-actions"),
+    });
+    this.surfaces.register("selection", undefined, {
+      closeClass: "hidden",
+      transitionMs: 200,
+    });
+    this.surfaces.register("placement-toolbar", undefined, {
+      transitionMs: 0,
+    });
+    this.surfaces.register("walk-hud", undefined, { transitionMs: 0 });
+    this.surfaces.register("photo-studio", openPhoto, {
+      modal: true,
+      onRequestClose: () => this.closePhotoStudio(),
+    });
+    this.surfaces.register("help-dialog", openHelp, {
+      modal: true,
+      onRequestClose: () => this.surfaces.close("help-dialog"),
+    });
+    this.surfaces.register("welcome", undefined, {
+      closeClass: "gone",
+      modal: true,
+      transitionMs: 700,
+    });
+    const syncCompactTools = () => {
+      moreToggle.hidden = false;
+      this.surfaces.setPersistent("secondary-actions", false);
+      ["catalog", "room-panel", "file-panel"].forEach((id) =>
+        this.surfaces.refreshModalState(id),
+      );
+    };
+    syncCompactTools();
+    this.compactToolsQuery.addEventListener("change", syncCompactTools);
     $("#catalog-count").textContent =
       `THE TOY CHEST · ${CATALOG.length} PIECES`;
-    const closePanels = () => {
-      catalog.classList.add("closed");
-      roomPanel.classList.add("closed");
-      filePanel.classList.add("closed");
-      this.closePhotoStudio();
-    };
     $("#begin").onclick = () => {
-      $("#welcome").classList.add("gone");
+      this.surfaces.close("welcome", false);
+      openCatalog.focus({ preventScroll: true });
       this.audio("begin");
     };
-    $("#open-catalog").onclick = () => {
-      roomPanel.classList.add("closed");
-      filePanel.classList.add("closed");
-      catalog.classList.remove("closed");
+    this.surfaces.open("welcome", $("#begin"));
+    openCatalog.onclick = () => {
+      this.surfaces.close("room-panel", false);
+      this.surfaces.close("file-panel", false);
+      if (this.compactToolsQuery.matches)
+        this.surfaces.close("secondary-actions", false);
+      this.surfaces.open("catalog", $("#catalog-add-tab"));
+      this.syncSelectionSurface();
     };
-    $("#close-catalog").onclick = () => catalog.classList.add("closed");
-    $("#open-room").onclick = () => {
-      catalog.classList.add("closed");
-      filePanel.classList.add("closed");
-      roomPanel.classList.remove("closed");
+    $("#close-catalog").onclick = () => {
+      this.surfaces.close("catalog");
+      this.syncSelectionSurface();
     };
-    $("#close-room").onclick = () => roomPanel.classList.add("closed");
+    openRoom.onclick = () => {
+      this.surfaces.close("catalog", false);
+      this.surfaces.close("file-panel", false);
+      if (this.compactToolsQuery.matches)
+        this.surfaces.close("secondary-actions", false);
+      this.surfaces.open("room-panel", $("#close-room"));
+      this.syncSelectionSurface();
+    };
+    $("#close-room").onclick = () => {
+      this.surfaces.close("room-panel");
+      this.syncSelectionSurface();
+    };
     this.syncRoomNameControl();
-    roomName.addEventListener("focus", () => {
-      roomNameBeforeEdit = this.roomName;
-    });
-    roomName.addEventListener("input", () => {
-      const raw = (roomName.textContent ?? "").replace(/[\r\n]+/g, " "),
-        value = raw.slice(0, 60);
-      if (raw !== value) {
-        roomName.textContent = value;
-        const range = document.createRange(),
-          selection = window.getSelection();
-        range.selectNodeContents(roomName);
-        range.collapse(false);
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-      }
-      this.roomName = value;
-      document.title = value.trim()
-        ? `${value.trim()} · My Little Room`
-        : "My Little Room";
-      this.saveRoomSettings();
-    });
-    roomName.addEventListener("blur", () => {
-      this.roomName = this.cleanRoomName(roomName.textContent ?? "");
-      this.syncRoomNameControl();
-      this.saveRoomSettings();
-    });
-    roomName.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        roomName.blur();
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        this.roomName = roomNameBeforeEdit;
+    const closeRename = (save: boolean) => {
+      if (save) {
+        this.roomName = this.cleanRoomName(roomNameInput.value);
         this.syncRoomNameControl();
-        roomName.blur();
+        this.saveRoomSettings();
+        this.announce(`Room renamed ${this.roomName}.`);
+      }
+      renameForm.hidden = true;
+      renameForm.inert = true;
+      roomName.hidden = false;
+      renameButton.setAttribute("aria-expanded", "false");
+      renameButton.focus();
+    };
+    renameButton.onclick = () => {
+      roomNameInput.value = this.roomName;
+      roomName.hidden = true;
+      renameForm.hidden = false;
+      renameForm.inert = false;
+      renameButton.setAttribute("aria-expanded", "true");
+      roomNameInput.focus();
+      roomNameInput.select();
+    };
+    renameForm.onsubmit = (event) => {
+      event.preventDefault();
+      closeRename(true);
+    };
+    $("#cancel-rename").onclick = () => closeRename(false);
+    roomNameInput.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRename(false);
       }
     });
-    $("#open-files").onclick = () => {
-      catalog.classList.add("closed");
-      roomPanel.classList.add("closed");
-      filePanel.classList.remove("closed");
+    renameForm.inert = true;
+    openFiles.onclick = () => {
+      this.surfaces.close("catalog", false);
+      this.surfaces.close("room-panel", false);
+      if (this.compactToolsQuery.matches)
+        this.surfaces.close("secondary-actions", false);
+      this.surfaces.open("file-panel", $("#close-files"));
+      this.syncSelectionSurface();
     };
-    $("#close-files").onclick = () => filePanel.classList.add("closed");
+    $("#close-files").onclick = () => {
+      this.surfaces.close("file-panel");
+      this.syncSelectionSurface();
+    };
+    moreToggle.onclick = () => {
+      this.surfaces.close("catalog", false);
+      this.surfaces.close("room-panel", false);
+      this.surfaces.close("file-panel", false);
+      this.surfaces.open("secondary-actions", $("#close-more"));
+      this.syncSelectionSurface();
+    };
+    $("#close-more").onclick = () => {
+      this.surfaces.close("secondary-actions");
+      this.syncSelectionSurface();
+    };
     $("#save-xml").onclick = () => this.saveDesignXml();
     $("#load-xml").onclick = () =>
       (document.querySelector("#load-xml-file") as HTMLInputElement).click();
@@ -1301,6 +1419,7 @@ export class Game {
       input.value = "";
     });
     $("#open-photo").onclick = () => void this.openPhotoStudio();
+    $("#walk-photo").onclick = () => void this.openPhotoStudio();
     $("#walk-toggle").onclick = () => this.toggleFirstPerson();
     $("#close-photo").onclick = () => this.closePhotoStudio();
     $("#photo-studio").addEventListener("click", (event) => {
@@ -1309,6 +1428,28 @@ export class Game {
     $("#retake-photo").onclick = () => void this.retakePhoto();
     $("#download-photo").onclick = () => this.downloadPhoto();
     $("#share-photo").onclick = () => void this.sharePhoto();
+    $("#placement-confirm").onclick = () => this.commitPlacement();
+    $("#placement-cancel").onclick = () => this.cancelPlacement();
+    $("#placement-rotate").onclick = () => {
+      if (!this.placement) return;
+      this.placement.data.rot += Math.PI / 12;
+      this.placement.group.rotation.y = this.placement.data.rot;
+      this.refreshPlacementValidity();
+    };
+    openHelp.onclick = () => {
+      if (this.compactToolsQuery.matches)
+        this.surfaces.close("secondary-actions", false);
+      this.surfaces.open("help-dialog", $("#close-help"));
+    };
+    $("#close-help").onclick = () => this.surfaces.close("help-dialog");
+    $("#help-dialog").addEventListener("click", (event) => {
+      if (event.target === event.currentTarget)
+        this.surfaces.close("help-dialog");
+    });
+    $("#dismiss-walk-hint").onclick = () => {
+      localStorage.setItem("my-little-room-walk-hint-v1", "dismissed");
+      $("#walk-touch-hint").hidden = true;
+    };
     widthInput.addEventListener("input", () =>
       this.setRoomSize(Number(widthInput.value), this.roomDepth),
     );
@@ -1381,23 +1522,98 @@ export class Game {
       this.setRoomFinish("floor", (event.target as HTMLInputElement).value),
     );
     this.syncRoomControls();
+    this.syncSnapControl();
+    document
+      .querySelectorAll<HTMLDetailsElement>(".room-section")
+      .forEach((section) =>
+        section.addEventListener("toggle", () => {
+          if (!section.open) return;
+          document
+            .querySelectorAll<HTMLDetailsElement>(".room-section")
+            .forEach((other) => {
+              if (other !== section) other.open = false;
+            });
+        }),
+      );
     $("#catalog-search").addEventListener("submit", (e) => e.preventDefault());
     $("#item-search").addEventListener("input", (e) => {
       this.catalogQuery = (e.target as HTMLInputElement).value
         .trim()
         .toLowerCase();
+      document
+        .querySelector(".catalog-discovery")
+        ?.classList.toggle("searching", Boolean(this.catalogQuery));
       this.renderCatalog(this.catalogCategory);
     });
-    $("#reset-view").onclick = () => this.resetCamera();
+    for (const id of ["catalog-placement", "catalog-size", "catalog-sort"])
+      $(`#${id}`).addEventListener("change", () => {
+        this.catalogPlacement = (
+          $("#catalog-placement") as HTMLSelectElement
+        ).value as CatalogPlacementFilter;
+        this.catalogSize = (
+          $("#catalog-size") as HTMLSelectElement
+        ).value as CatalogSizeFilter;
+        this.catalogSort = (
+          $("#catalog-sort") as HTMLSelectElement
+        ).value as CatalogSort;
+        this.renderCatalog(this.catalogCategory);
+      });
+    const setCatalogView = (view: "add" | "room") => {
+      const addTab = $("#catalog-add-tab") as HTMLButtonElement,
+        roomTab = $("#catalog-room-tab") as HTMLButtonElement,
+        addView = $("#catalog-add-view"),
+        roomView = $("#catalog-room-view");
+      const roomActive = view === "room";
+      addTab.setAttribute("aria-selected", String(!roomActive));
+      roomTab.setAttribute("aria-selected", String(roomActive));
+      addTab.tabIndex = roomActive ? -1 : 0;
+      roomTab.tabIndex = roomActive ? 0 : -1;
+      addView.hidden = roomActive;
+      addView.inert = roomActive;
+      roomView.hidden = !roomActive;
+      roomView.inert = !roomActive;
+      if (roomActive) this.renderObjectManager();
+    };
+    $("#catalog-add-tab").onclick = () => setCatalogView("add");
+    $("#catalog-room-tab").onclick = () => setCatalogView("room");
+    document
+      .querySelector(".catalog-tabs")
+      ?.addEventListener("keydown", (event) => {
+        const keyboardEvent = event as KeyboardEvent;
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(keyboardEvent.key))
+          return;
+        keyboardEvent.preventDefault();
+        const room = keyboardEvent.key === "ArrowRight" || keyboardEvent.key === "End";
+        setCatalogView(room ? "room" : "add");
+        (room ? $("#catalog-room-tab") : $("#catalog-add-tab")).focus();
+      });
+    document
+      .querySelectorAll<HTMLButtonElement>("[data-object-action]")
+      .forEach((button) => {
+        button.onclick = () => this.runObjectManagerAction(button.dataset.objectAction!);
+      });
+    $("#reset-view").onclick = () => {
+      this.resetCamera();
+      this.announce("Room view reset to fit the full room.");
+    };
     $("#time-toggle").onclick = () => this.toggleTime();
+    $("#snap-toggle").onclick = () => {
+      this.gridSnap = !this.gridSnap;
+      this.syncSnapControl();
+      this.saveRoomSettings();
+      this.announce(`Grid snapping ${this.gridSnap ? "on" : "off"}.`);
+    };
     $("#undo").onclick = () => this.undo();
     $("#redo").onclick = () => this.redo();
     $("#rotate-left").onclick = () => this.modify(-Math.PI / 12);
     $("#rotate-right").onclick = () => this.modify(Math.PI / 12);
     $("#lower").onclick = () => this.adjustHeight(-0.2);
     $("#raise").onclick = () => this.adjustHeight(0.2);
-    $("#color").onclick = () => this.recolor();
+    $("#color").addEventListener("input", (event) =>
+      this.setSelectedColor((event.target as HTMLInputElement).value),
+    );
     $("#duplicate").onclick = () => this.duplicate();
+    $("#align-wall").onclick = () => this.alignSelectedToWall();
     $("#remove").onclick = () => this.remove();
     $("#sound").onclick = () => this.toggleSound();
     this.syncSoundControl();
@@ -1407,17 +1623,24 @@ export class Game {
         (b.onclick = () => {
           document
             .querySelectorAll("#categories button")
-            .forEach((x) => x.classList.remove("active"));
+            .forEach((x) => {
+              x.classList.remove("active");
+              x.setAttribute("aria-pressed", "false");
+            });
           b.classList.add("active");
-          this.renderCatalog((b.dataset.cat || "all") as Category | "all");
+          b.setAttribute("aria-pressed", "true");
+          b.scrollIntoView({ block: "nearest", inline: "center" });
+          this.renderCatalog((b.dataset.cat || "all") as CatalogFilter);
         }),
     );
     this.renderCatalog("all");
+    this.renderObjectManager();
     this.canvas.addEventListener("pointerdown", (e) => this.pointerDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.pointerMove(e));
     window.addEventListener("pointerup", () => this.pointerUp());
     this.bindFirstPersonControls();
     window.addEventListener("keydown", (e) => {
+      if (e.defaultPrevented) return;
       if ((e.target as HTMLElement).matches("input,textarea,[contenteditable]"))
         return;
       if (this.firstPerson) {
@@ -1441,14 +1664,43 @@ export class Game {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         e.shiftKey ? this.redo() : this.undo();
+      } else if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+        e.preventDefault();
+        this.surfaces.open("help-dialog", $("#close-help"));
+      } else if (e.key === "Escape" && this.placement) {
+        e.preventDefault();
+        this.cancelPlacement();
+      } else if (e.key === "Enter" && this.placement) {
+        e.preventDefault();
+        this.commitPlacement();
       } else if (e.key === "Delete" || e.key === "Backspace") this.remove();
+      else if (
+        this.selected &&
+        document.activeElement === this.canvas &&
+        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)
+      ) {
+        e.preventDefault();
+        const step = e.shiftKey ? 0.5 : 0.1;
+        if (e.key === "ArrowLeft") this.nudgeSelected(-step, 0);
+        else if (e.key === "ArrowRight") this.nudgeSelected(step, 0);
+        else if (e.key === "ArrowUp") this.nudgeSelected(0, -step);
+        else this.nudgeSelected(0, step);
+      }
       else if (e.key.toLowerCase() === "q") this.modify(-Math.PI / 12);
       else if (e.key.toLowerCase() === "e") this.modify(Math.PI / 12);
       else if (e.key.toLowerCase() === "r") this.adjustHeight(0.2);
       else if (e.key.toLowerCase() === "f") this.adjustHeight(-0.2);
       else if (e.key === "Escape") {
-        closePanels();
-        this.select(undefined);
+        const openSurface = [
+          ...(this.compactToolsQuery.matches ? ["secondary-actions"] : []),
+          "file-panel",
+          "room-panel",
+          "catalog",
+        ].find((id) => this.surfaces.isOpen(id));
+        if (openSurface) {
+          this.surfaces.close(openSurface);
+          this.syncSelectionSurface();
+        } else this.select(undefined);
       }
     });
   }
@@ -1468,6 +1720,7 @@ export class Game {
         floorStyle?: FloorFinishStyle;
         muted?: boolean;
         evening?: boolean;
+        gridSnap?: boolean;
         name?: string;
       } | null;
       if (saved) {
@@ -1501,6 +1754,7 @@ export class Game {
           this.roomFloorStyle = saved.floorStyle ?? "planks";
         this.muted = saved.muted ?? false;
         this.evening = saved.evening ?? false;
+        this.gridSnap = saved.gridSnap ?? false;
         this.roomName = this.cleanRoomName(saved.name ?? this.roomName);
         if (["rectangle", "l", "t", "u"].includes(saved.shape ?? ""))
           this.roomShape = saved.shape!;
@@ -1518,6 +1772,16 @@ export class Game {
     depth.value = String(this.roomDepth);
     shapeWidth.value = String(Math.round(this.roomShapeWidth * 100));
     shapeDepth.value = String(Math.round(this.roomCrossbarDepth * 100));
+    width.setAttribute("aria-valuetext", `${this.roomWidth} room units wide`);
+    depth.setAttribute("aria-valuetext", `${this.roomDepth} room units deep`);
+    shapeWidth.setAttribute(
+      "aria-valuetext",
+      `${Math.round(this.roomShapeWidth * 100)} percent`,
+    );
+    shapeDepth.setAttribute(
+      "aria-valuetext",
+      `${Math.round(this.roomCrossbarDepth * 100)} percent`,
+    );
     const wallHex = `#${new THREE.Color(this.roomWallColor).getHexString()}`,
       floorHex = `#${new THREE.Color(this.roomFloorColor).getHexString()}`;
     document.querySelector<HTMLInputElement>("#wall-color-custom")!.value =
@@ -1603,6 +1867,7 @@ export class Game {
         floorStyle: this.roomFloorStyle,
         muted: this.muted,
         evening: this.evening,
+        gridSnap: this.gridSnap,
         name: this.roomName,
       }),
     );
@@ -1906,25 +2171,79 @@ export class Game {
         ? 0
         : Math.hypot(p[0].clientX - p[1].clientX, p[0].clientY - p[1].clientY);
     };
+    const beginTouchDrag = (event: PointerEvent, group: THREE.Group) => {
+      this.select(group);
+      this.checkpoint();
+      this.drag = true;
+      this.controls.enabled = false;
+      const data = this.data.find((item) => item.id === group.userData.itemId);
+      if (data) this.dragValid = true;
+      this.doorFollowers = [];
+      if (data && ARCHITECTURAL_KINDS.has(data.kind)) {
+        const room = this.extensionRect(data);
+        if (room)
+          this.doorFollowers = this.data
+            .filter(
+              (item) =>
+                item.id !== data.id &&
+                item.x >= room.minX &&
+                item.x <= room.maxX &&
+                item.z >= room.minZ &&
+                item.z <= room.maxZ,
+            )
+            .map((item) => item.id);
+      }
+      this.dragHeight = data?.supportId ? 0 : group.position.y;
+      this.setPointer(event);
+      this.ray.setFromCamera(this.pointer, this.camera);
+      const hit = new THREE.Vector3();
+      this.ray.ray.intersectPlane(
+        new THREE.Plane(new THREE.Vector3(0, 1, 0), -this.dragHeight),
+        hit,
+      );
+      this.dragOffset.copy(group.position).sub(hit);
+      try {
+        this.canvas.setPointerCapture(event.pointerId);
+      } catch {
+        // Synthetic touch events do not always create a capturable pointer.
+      }
+    };
     this.canvas.addEventListener(
       "pointerdown",
       (e) => {
         if (e.pointerType !== "touch") return;
         if (this.firstPerson) return;
+        if (this.placement) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          this.updatePlacementFromPointer(e);
+          this.commitPlacement();
+          return;
+        }
         this.touches.set(e.pointerId, e);
-        if (this.touches.size === 2 && this.selected) {
+        if (this.touches.size === 2) {
+          this.pendingTouch = undefined;
           if (this.drag) this.pointerUp();
-          this.checkpoint();
           this.pinchStart = distance();
-          this.pinchScale = this.findData()?.scale ?? 1;
+          this.pinchCameraDistance = this.camera.position.distanceTo(
+            this.controls.target,
+          );
           this.controls.enabled = false;
           e.stopImmediatePropagation();
           return;
         }
         this.setPointer(e);
         this.ray.setFromCamera(this.pointer, this.camera);
-        if (this.ray.intersectObjects([...this.items.values()], true).length) {
-          this.pointerDown(e);
+        const hit = this.ray.intersectObjects([...this.items.values()], true)[0],
+          group = hit ? this.ownerOf(hit.object) : undefined;
+        if (group) {
+          this.select(group);
+          this.pendingTouch = {
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
+            group,
+          };
           e.stopImmediatePropagation();
         }
       },
@@ -1936,15 +2255,32 @@ export class Game {
         if (e.pointerType !== "touch") return;
         if (this.firstPerson) return;
         this.touches.set(e.pointerId, e);
-        if (this.pinchStart && this.selected) {
-          const d = this.findData();
-          if (d) {
-            d.scale = THREE.MathUtils.clamp(
-              (this.pinchScale * distance()) / this.pinchStart,
-              0.55,
-              1.6,
-            );
-            this.selected.scale.setScalar(d.scale);
+        if (this.pinchStart && this.touches.size >= 2) {
+          const currentDistance = Math.max(1, distance()),
+            nextDistance = THREE.MathUtils.clamp(
+              (this.pinchCameraDistance * this.pinchStart) / currentDistance,
+              this.controls.minDistance,
+              this.controls.maxDistance,
+            ),
+            direction = this.camera.position
+              .clone()
+              .sub(this.controls.target)
+              .normalize();
+          this.camera.position
+            .copy(this.controls.target)
+            .addScaledVector(direction, nextDistance);
+          this.controls.update();
+          e.stopImmediatePropagation();
+        } else if (this.pendingTouch?.pointerId === e.pointerId) {
+          const moved = Math.hypot(
+            e.clientX - this.pendingTouch.startX,
+            e.clientY - this.pendingTouch.startY,
+          );
+          if (moved >= 8) {
+            const group = this.pendingTouch.group;
+            this.pendingTouch = undefined;
+            beginTouchDrag(e, group);
+            this.pointerMove(e);
           }
           e.stopImmediatePropagation();
         } else if (this.drag) {
@@ -1958,9 +2294,14 @@ export class Game {
       if (this.firstPerson) return;
       this.touches.delete(e.pointerId);
       if (this.pinchStart) {
-        this.pinchStart = 0;
+        if (this.touches.size < 2) {
+          this.pinchStart = 0;
+          this.pinchCameraDistance = 0;
+          this.controls.enabled = true;
+        }
+      } else if (this.pendingTouch?.pointerId === e.pointerId) {
+        this.pendingTouch = undefined;
         this.controls.enabled = true;
-        this.changed();
       } else this.pointerUp();
     };
     window.addEventListener("pointerup", finish, true);
@@ -1969,6 +2310,8 @@ export class Game {
     window.addEventListener("blur", () => {
       this.touches.clear();
       this.pinchStart = 0;
+      this.pinchCameraDistance = 0;
+      this.pendingTouch = undefined;
       this.pointerUp();
       this.controls.enabled = true;
     });
@@ -1976,44 +2319,781 @@ export class Game {
       if (document.hidden) {
         this.touches.clear();
         this.pinchStart = 0;
+        this.pinchCameraDistance = 0;
+        this.pendingTouch = undefined;
         this.pointerUp();
         this.controls.enabled = true;
       }
     });
   }
-  private renderCatalog(cat: Category | "all") {
+  private renderCatalog(cat: CatalogFilter) {
     this.catalogCategory = cat;
-    const host = document.querySelector("#items")!;
+    const host = document.querySelector<HTMLElement>("#items")!;
     host.innerHTML = "";
     const terms = this.catalogQuery.split(/\s+/).filter(Boolean);
     const matches = CATALOG.filter((x) => {
       const haystack =
         `${x.name} ${x.note} ${x.kind} ${x.category}`.toLowerCase();
       return (
-        (cat === "all" || x.category === cat) &&
+        (cat === "all" ||
+          (cat === "recent" && this.recentKinds.includes(x.kind)) ||
+          (cat === "favorites" && this.favoriteKinds.has(x.kind)) ||
+          x.category === cat) &&
+        (this.catalogPlacement === "all" ||
+          (x.placement ?? "floor") === this.catalogPlacement) &&
+        (this.catalogSize === "all" ||
+          this.catalogItemSize(x) === this.catalogSize) &&
         terms.every((term) => haystack.includes(term))
       );
     });
+    if (cat === "recent" || this.catalogSort === "recent")
+      matches.sort(
+        (a, b) => {
+          const aIndex = this.recentKinds.indexOf(a.kind),
+            bIndex = this.recentKinds.indexOf(b.kind);
+          return (aIndex < 0 ? Number.MAX_SAFE_INTEGER : aIndex) -
+            (bIndex < 0 ? Number.MAX_SAFE_INTEGER : bIndex);
+        },
+      );
+    else if (this.catalogSort === "name")
+      matches.sort((a, b) => a.name.localeCompare(b.name));
     for (const x of matches) {
-      const b = document.createElement("button"),
+      const card = document.createElement("div"),
+        b = document.createElement("button"),
+        favorite = document.createElement("button"),
+        preview = document.createElement("img"),
         icon = document.createElement("span"),
-        note = document.createElement("small");
+        note = document.createElement("small"),
+        addLabel = document.createElement("em");
+      card.className = "item-card";
       b.className = "item";
       b.setAttribute("aria-label", `${x.name}. ${x.note}`);
+      b.setAttribute("aria-keyshortcuts", "F");
+      preview.className = "item-preview";
+      preview.alt = "";
+      preview.setAttribute("aria-hidden", "true");
       icon.textContent = x.icon;
+      icon.className = "item-icon-fallback";
       note.textContent = x.note;
-      b.append(icon, document.createTextNode(x.name), note);
+      addLabel.textContent = "+ Preview & place";
+      b.append(preview, icon, document.createTextNode(x.name), note, addLabel);
+      this.observeCatalogThumbnail(x, preview, icon);
       b.onclick = () => {
-        this.add(x);
-        if (innerWidth < 700)
-          document.querySelector("#catalog")?.classList.add("closed");
+        this.recentKinds = [x.kind, ...this.recentKinds.filter((kind) => kind !== x.kind)].slice(0, 12);
+        localStorage.setItem("my-little-room-recent-v1", JSON.stringify(this.recentKinds));
+        this.startPlacement(x);
       };
-      host.appendChild(b);
+      favorite.className = "favorite-item";
+      favorite.type = "button";
+      favorite.tabIndex = -1;
+      const syncFavorite = () => {
+        const active = this.favoriteKinds.has(x.kind);
+        favorite.textContent = active ? "★" : "☆";
+        favorite.setAttribute("aria-pressed", String(active));
+        favorite.setAttribute(
+          "aria-label",
+          `${active ? "Remove" : "Add"} ${x.name} ${active ? "from" : "to"} favorites`,
+        );
+      };
+      const toggleFavorite = () => {
+        if (this.favoriteKinds.has(x.kind)) this.favoriteKinds.delete(x.kind);
+        else this.favoriteKinds.add(x.kind);
+        localStorage.setItem(
+          "my-little-room-favorites-v1",
+          JSON.stringify([...this.favoriteKinds]),
+        );
+        syncFavorite();
+        this.announce(
+          `${x.name} ${this.favoriteKinds.has(x.kind) ? "added to" : "removed from"} favorites.`,
+        );
+        if (cat === "favorites" && !this.favoriteKinds.has(x.kind))
+          this.renderCatalog(cat);
+      };
+      favorite.onclick = toggleFavorite;
+      b.addEventListener("keydown", (event) => {
+        if (event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          toggleFavorite();
+        }
+      });
+      syncFavorite();
+      card.append(b, favorite);
+      host.appendChild(card);
     }
+    const itemButtons = [...host.querySelectorAll<HTMLButtonElement>(".item")];
+    itemButtons.forEach((button, index) => (button.tabIndex = index ? -1 : 0));
+    host.onkeydown = (event) => {
+      const current = itemButtons.indexOf(document.activeElement as HTMLButtonElement);
+      if (current < 0 || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const columns = Math.max(1, Math.round(host.clientWidth / Math.max(150, itemButtons[0].clientWidth)));
+      const delta = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" ? -columns : event.key === "ArrowDown" ? columns : 0;
+      const next = event.key === "Home" ? 0 : event.key === "End" ? itemButtons.length - 1 : THREE.MathUtils.clamp(current + delta, 0, itemButtons.length - 1);
+      itemButtons[current].tabIndex = -1;
+      itemButtons[next].tabIndex = 0;
+      itemButtons[next].focus();
+    };
     document.querySelector<HTMLElement>("#catalog-summary")!.textContent =
       `${matches.length} of ${CATALOG.length} pieces`;
     const empty = document.querySelector<HTMLElement>("#no-results")!;
     empty.hidden = matches.length > 0;
+  }
+  private catalogItemSize(item: CatalogItem): Exclude<CatalogSizeFilter, "all"> {
+    const placement = item.placement ?? "floor";
+    if (placement === "surface" || placement === "wall" || placement === "ceiling")
+      return "small";
+    if (
+      item.category === "beds" ||
+      /(wardrobe|cabinet|bookcase|shelf|sofa|sectional|desk|dresser|bed|door|window)/.test(
+        `${item.kind} ${item.name}`.toLowerCase(),
+      )
+    )
+      return "large";
+    return "medium";
+  }
+  private observeCatalogThumbnail(
+    catalog: CatalogItem,
+    image: HTMLImageElement,
+    fallback: HTMLElement,
+  ) {
+    const cached = this.catalogThumbnailCache.get(catalog.kind);
+    if (cached) {
+      image.src = cached;
+      fallback.hidden = true;
+      return;
+    }
+    image.dataset.catalogKind = catalog.kind;
+    this.catalogThumbnailObserver ??= new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const target = entry.target as HTMLImageElement,
+            kind = target.dataset.catalogKind,
+            item = CATALOG.find((candidate) => candidate.kind === kind);
+          this.catalogThumbnailObserver?.unobserve(target);
+          if (!item) continue;
+          const render = () => {
+            if (!target.isConnected) return;
+            const url = this.renderCatalogThumbnail(item);
+            if (!url) return;
+            this.catalogThumbnailCache.set(item.kind, url);
+            target.src = url;
+            const icon = target.nextElementSibling as HTMLElement | null;
+            if (icon?.classList.contains("item-icon-fallback")) icon.hidden = true;
+          };
+          if (typeof window.requestIdleCallback === "function")
+            window.requestIdleCallback(render, { timeout: 900 });
+          else globalThis.setTimeout(render, 0);
+        }
+      },
+      { root: document.querySelector("#catalog-add-view"), rootMargin: "180px" },
+    );
+    this.catalogThumbnailObserver.observe(image);
+  }
+  private renderCatalogThumbnail(catalog: CatalogItem) {
+    try {
+      this.catalogThumbnailRenderer ??= new THREE.WebGLRenderer({
+        alpha: true,
+        antialias: true,
+        preserveDrawingBuffer: true,
+      });
+      const renderer = this.catalogThumbnailRenderer;
+      renderer.setSize(176, 124, false);
+      renderer.setPixelRatio(1);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.08;
+      renderer.setClearColor(0x000000, 0);
+      const seed = [...catalog.kind].reduce((sum, character) => sum + character.charCodeAt(0), 0),
+        data: ItemData = {
+          id: `thumbnail-${catalog.kind}`,
+          kind: catalog.kind,
+          name: catalog.name,
+          category: catalog.category,
+          x: 0,
+          y: catalog.defaultY ?? 0,
+          z: 0,
+          rot: 0,
+          color: PALETTE[seed % PALETTE.length],
+          scale: 1,
+        },
+        model = this.makeItem(data),
+        scene = new THREE.Scene(),
+        camera = new THREE.PerspectiveCamera(32, 176 / 124, 0.01, 100),
+        box = new THREE.Box3().setFromObject(model),
+        center = box.getCenter(new THREE.Vector3()),
+        size = box.getSize(new THREE.Vector3()),
+        radius = Math.max(size.x, size.y, size.z, 0.5);
+      model.position.sub(center);
+      model.rotation.y = -0.5;
+      scene.add(model);
+      scene.add(new THREE.HemisphereLight(0xfff6df, 0x6f655b, 2.4));
+      const key = new THREE.DirectionalLight(0xffe4bd, 3.2);
+      key.position.set(3, 5, 4);
+      scene.add(key);
+      camera.position.set(radius * 2.15, radius * 1.55, radius * 2.7);
+      camera.lookAt(0, 0, 0);
+      renderer.render(scene, camera);
+      const result = renderer.domElement.toDataURL("image/webp", 0.82);
+      model.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        object.geometry.dispose();
+        const materials = Array.isArray(object.material)
+          ? object.material
+          : [object.material];
+        materials.forEach((material) => material.dispose());
+      });
+      return result;
+    } catch (error) {
+      console.warn(`Could not render catalog preview for ${catalog.kind}`, error);
+      return undefined;
+    }
+  }
+  private announce(message: string) {
+    const status = document.querySelector<HTMLElement>("#editor-status");
+    if (!status) return;
+    status.textContent = "";
+    requestAnimationFrame(() => (status.textContent = message));
+  }
+  private objectLabel(data: ItemData) {
+    const peers = this.data.filter((item) => item.name === data.name),
+      index = peers.findIndex((item) => item.id === data.id);
+    return peers.length > 1 ? `${data.name} ${index + 1}` : data.name;
+  }
+  private renderObjectManager() {
+    const host = document.querySelector<HTMLElement>("#room-object-list"),
+      count = document.querySelector<HTMLElement>("#room-object-count");
+    if (!host || !count) return;
+    host.replaceChildren();
+    count.textContent = `${this.data.length} ${this.data.length === 1 ? "object" : "objects"}`;
+    if (!this.data.length) {
+      const empty = document.createElement("p");
+      empty.className = "object-manager-empty";
+      empty.textContent = "Your room is empty. Choose Add objects to begin.";
+      host.append(empty);
+      this.syncObjectManagerSelection();
+      return;
+    }
+    for (const data of this.data) {
+      const button = document.createElement("button");
+      const label = this.objectLabel(data);
+      button.className = "room-object";
+      button.dataset.objectId = data.id;
+      button.setAttribute("aria-pressed", String(data.id === this.selected?.userData.itemId));
+      button.setAttribute(
+        "aria-label",
+        `${label}. Position ${data.x.toFixed(1)} across, ${data.z.toFixed(1)} deep, height ${(data.y ?? 0).toFixed(1)}.`,
+      );
+      button.setAttribute(
+        "aria-keyshortcuts",
+        "ArrowLeft ArrowRight ArrowUp ArrowDown Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown",
+      );
+      const name = document.createElement("strong"),
+        position = document.createElement("small");
+      name.textContent = label;
+      position.textContent = `${data.x.toFixed(1)} across · ${data.z.toFixed(1)} deep`;
+      button.append(name, position);
+      button.onclick = () => {
+        this.select(this.items.get(data.id));
+        this.announce(`${label} selected.`);
+      };
+      button.onkeydown = (event) => {
+        const step = event.shiftKey ? 0.5 : 0.1;
+        const moves: Record<string, [number, number]> = {
+          ArrowLeft: [-step, 0],
+          ArrowRight: [step, 0],
+          ArrowUp: [0, -step],
+          ArrowDown: [0, step],
+        };
+        const move = moves[event.key];
+        if (!move) return;
+        event.preventDefault();
+        this.select(this.items.get(data.id));
+        this.nudgeSelected(move[0], move[1]);
+        const updated = this.findData();
+        if (updated) {
+          position.textContent = `${updated.x.toFixed(1)} across · ${updated.z.toFixed(1)} deep`;
+          button.setAttribute(
+            "aria-label",
+            `${label}. Position ${updated.x.toFixed(1)} across, ${updated.z.toFixed(1)} deep, height ${(updated.y ?? 0).toFixed(1)}.`,
+          );
+        }
+      };
+      host.append(button);
+    }
+    this.syncObjectManagerSelection();
+    this.syncTransformReadout();
+  }
+  private syncObjectManagerSelection() {
+    const data = this.findData(),
+      controls = document.querySelector<HTMLElement>("#object-manager-controls"),
+      name = document.querySelector<HTMLElement>("#object-manager-selected");
+    document
+      .querySelectorAll<HTMLButtonElement>(".room-object")
+      .forEach((button) => {
+        const selected = button.dataset.objectId === data?.id;
+        button.classList.toggle("selected", selected);
+        button.setAttribute("aria-pressed", String(selected));
+      });
+    if (!controls || !name) return;
+    controls.hidden = !data;
+    controls.inert = !data;
+    if (data)
+      name.textContent = `${this.objectLabel(data)} · ${data.x.toFixed(1)} across · ${data.z.toFixed(1)} deep`;
+  }
+  private nudgeSelected(dx: number, dz: number) {
+    const data = this.findData();
+    if (!data || !this.selected) return;
+    const oldX = data.x,
+      oldZ = data.z;
+    this.checkpoint();
+    data.x += dx;
+    data.z += dz;
+    if (this.gridSnap) {
+      data.x = Math.round(data.x * 2) / 2;
+      data.z = Math.round(data.z * 2) / 2;
+    }
+    this.selected.position.set(data.x, data.y ?? 0, data.z);
+    this.keepSelectedInRoom();
+    const ignored = new Set<string>();
+    if (data.supportId) ignored.add(data.supportId);
+    if (this.objectCollision(this.selected, data, ignored)) {
+      data.x = oldX;
+      data.z = oldZ;
+      this.selected.position.set(oldX, data.y ?? 0, oldZ);
+      this.history.pop();
+      this.updateButtons();
+      this.setDragFeedback(false);
+      window.setTimeout(() => this.setDragFeedback(true, true), 280);
+      this.announce(`${this.objectLabel(data)} cannot move there because another object is in the way.`);
+      return;
+    }
+    this.changed();
+    this.syncObjectManagerSelection();
+    this.announce(
+      `${this.objectLabel(data)} moved to ${data.x.toFixed(1)} across, ${data.z.toFixed(1)} deep.`,
+    );
+  }
+  private alignSelectedToWall() {
+    const data = this.findData();
+    if (!data || !this.selected) return;
+    const group = this.selected,
+      old = { x: data.x, z: data.z, rot: data.rot },
+      inset = 0.2,
+      candidates: Array<{ x: number; z: number; rot: number; distance: number }> = [];
+    for (const rect of this.roomRects(true)) {
+      for (const side of ["back", "front", "left", "right"] as const) {
+        const rot = side === "left" || side === "right" ? Math.PI / 2 : 0;
+        group.rotation.y = rot;
+        const size = new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3()),
+          halfX = size.x / 2,
+          halfZ = size.z / 2;
+        let x = THREE.MathUtils.clamp(data.x, rect.minX + halfX, rect.maxX - halfX),
+          z = THREE.MathUtils.clamp(data.z, rect.minZ + halfZ, rect.maxZ - halfZ);
+        if (side === "back") z = rect.minZ + halfZ + inset;
+        if (side === "front") z = rect.maxZ - halfZ - inset;
+        if (side === "left") x = rect.minX + halfX + inset;
+        if (side === "right") x = rect.maxX - halfX - inset;
+        if (
+          x >= rect.minX + halfX &&
+          x <= rect.maxX - halfX &&
+          z >= rect.minZ + halfZ &&
+          z <= rect.maxZ - halfZ
+        )
+          candidates.push({
+            x,
+            z,
+            rot,
+            distance: (x - data.x) ** 2 + (z - data.z) ** 2,
+          });
+      }
+    }
+    group.rotation.y = old.rot;
+    const target = candidates.sort((a, b) => a.distance - b.distance)[0];
+    if (!target) {
+      this.announce(`${this.objectLabel(data)} cannot fit against a wall.`);
+      return;
+    }
+    this.checkpoint();
+    data.x = target.x;
+    data.z = target.z;
+    data.rot = target.rot;
+    group.position.set(data.x, data.y ?? 0, data.z);
+    group.rotation.y = data.rot;
+    const ignored = new Set<string>();
+    if (data.supportId) ignored.add(data.supportId);
+    if (this.objectCollision(group, data, ignored)) {
+      data.x = old.x;
+      data.z = old.z;
+      data.rot = old.rot;
+      group.position.set(data.x, data.y ?? 0, data.z);
+      group.rotation.y = data.rot;
+      this.history.pop();
+      this.updateButtons();
+      this.setDragFeedback(false);
+      window.setTimeout(() => this.setDragFeedback(true, true), 280);
+      this.announce(`${this.objectLabel(data)} cannot align there because another object is in the way.`);
+      return;
+    }
+    this.changed();
+    this.syncObjectManagerSelection();
+    this.syncTransformReadout();
+    this.announce(`${this.objectLabel(data)} aligned to the nearest wall.`);
+  }
+  private runObjectManagerAction(action: string) {
+    if (action === "undo") {
+      this.undo();
+      this.announce("Last object change undone.");
+      return;
+    }
+    const before = this.findData();
+    if (!before) return;
+    const name = this.objectLabel(before);
+    switch (action) {
+      case "left":
+        this.nudgeSelected(-0.1, 0);
+        return;
+      case "right":
+        this.nudgeSelected(0.1, 0);
+        return;
+      case "forward":
+        this.nudgeSelected(0, -0.1);
+        return;
+      case "back":
+        this.nudgeSelected(0, 0.1);
+        return;
+      case "rotate-left":
+        this.modify(-Math.PI / 12);
+        break;
+      case "rotate-right":
+        this.modify(Math.PI / 12);
+        break;
+      case "lower":
+        this.adjustHeight(-0.2);
+        break;
+      case "raise":
+        this.adjustHeight(0.2);
+        break;
+      case "smaller":
+        this.resizeSelected(-0.1);
+        break;
+      case "larger":
+        this.resizeSelected(0.1);
+        break;
+      case "color":
+        this.recolor();
+        break;
+      case "duplicate":
+        this.duplicate();
+        this.announce(`${name} duplicated.`);
+        return;
+      case "align-wall":
+        this.alignSelectedToWall();
+        return;
+      case "remove":
+        this.remove();
+        this.announce(`${name} removed. Undo is available.`);
+        return;
+      default:
+        return;
+    }
+    const updated = this.findData();
+    if (updated) {
+      this.syncObjectManagerSelection();
+      this.announce(`${name} updated.`);
+    }
+  }
+  private startPlacement(catalog: CatalogItem) {
+    this.cancelPlacement(false);
+    this.surfaces.close("catalog", false);
+    this.surfaces.close("room-panel", false);
+    this.surfaces.close("file-panel", false);
+    if (this.compactToolsQuery.matches)
+      this.surfaces.close("secondary-actions", false);
+    this.select(undefined);
+    const defaultColors: Record<string, number> = {
+        billy: 0xeeeae0,
+        paxdrawers: 0xeeeae0,
+        memoryrug: 0xffffff,
+        window: 0xc98270,
+        wallframes: 0x6f4935,
+        wallshelf: 0x6f4935,
+      },
+      data: ItemData = {
+        id: `preview-${crypto.randomUUID()}`,
+        kind: catalog.kind,
+        name: catalog.name,
+        category: catalog.category,
+        x: 0,
+        y: catalog.defaultY ?? 0,
+        z: 0,
+        rot: 0,
+        color:
+          defaultColors[catalog.kind] ??
+          PALETTE[Math.floor(Math.random() * PALETTE.length)],
+        scale: 1,
+      },
+      group = this.makeItem(data),
+      marker = new THREE.Mesh(
+        new THREE.RingGeometry(0.55, 0.72, 36),
+        new THREE.MeshBasicMaterial({
+          color: 0x4f9b65,
+          transparent: true,
+          opacity: 0.9,
+          depthTest: false,
+          side: THREE.DoubleSide,
+        }),
+      );
+    group.name = `${catalog.name} placement preview`;
+    group.userData.placementPreview = true;
+    group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      const clones = materials.map((material) => {
+        const clone = material.clone();
+        clone.transparent = true;
+        clone.opacity = Math.min(clone.opacity, 0.68);
+        clone.depthWrite = false;
+        clone.depthTest = false;
+        return clone;
+      });
+      object.material = Array.isArray(object.material) ? clones : clones[0];
+      object.renderOrder = 999;
+    });
+    if (ARCHITECTURAL_KINDS.has(data.kind)) {
+      this.snapDoorToWall(data, this.findClearBackWallPosition(1), 0);
+      group.position.set(data.x, 0, data.z);
+      group.rotation.y = data.rot;
+    } else if (catalog.placement === "wall") {
+      this.positionAgainstNearestWall(data, group, 0, -this.roomDepth / 2);
+    } else if (catalog.placement === "surface") {
+      const support = [...this.items.values()].find((item) => {
+        const supportData = this.data.find((entry) => entry.id === item.userData.itemId);
+        return Boolean(supportData && SUPPORT_KINDS.has(supportData.kind));
+      });
+      if (support) {
+        data.x = support.position.x;
+        data.z = support.position.z;
+        data.y = this.supportTop(support) + 0.025;
+        data.supportId = support.userData.itemId;
+        group.position.set(data.x, data.y, data.z);
+      } else {
+        const spot = this.findOpenFloorSpot(group);
+        data.x = spot.x;
+        data.z = spot.z;
+        group.position.set(data.x, data.y ?? 0, data.z);
+      }
+    } else {
+      const spot = this.findOpenFloorSpot(group);
+      data.x = spot.x;
+      data.z = spot.z;
+      group.position.set(data.x, data.y ?? 0, data.z);
+    }
+    marker.rotation.x = -Math.PI / 2;
+    marker.position.set(data.x, 0.025, data.z);
+    marker.renderOrder = 1000;
+    this.scene.add(group, marker);
+    this.placement = { catalog, data, group, marker, valid: true };
+    document.querySelector("#placement-name")!.textContent = `Place ${catalog.name}`;
+    this.surfaces.setPersistent("placement-toolbar", true);
+    document.body.classList.add("placing-object");
+    this.refreshPlacementValidity();
+    document.querySelector<HTMLButtonElement>("#placement-confirm")?.focus();
+    this.announce(
+      `${catalog.name} preview ready. Move over the floor and choose Place here, or press Enter.`,
+    );
+  }
+  private objectCollision(
+    group: THREE.Group,
+    data: ItemData,
+    ignoredIds = new Set<string>(),
+  ) {
+    if (["memoryrug", "roundrug"].includes(data.kind)) return false;
+    const candidate = new THREE.Box3().setFromObject(group).expandByScalar(-0.06);
+    for (const [id, other] of this.items) {
+      if (id === data.id || ignoredIds.has(id)) continue;
+      const otherData = this.data.find((item) => item.id === id),
+        otherCatalog = otherData
+          ? CATALOG.find((item) => item.kind === otherData.kind)
+          : undefined;
+      if (
+        !otherData ||
+        ["memoryrug", "roundrug"].includes(otherData.kind) ||
+        otherCatalog?.placement === "wall" ||
+        otherCatalog?.placement === "ceiling"
+      )
+        continue;
+      const otherBox = new THREE.Box3().setFromObject(other).expandByScalar(-0.06);
+      if (candidate.intersectsBox(otherBox)) return true;
+    }
+    return false;
+  }
+  private refreshPlacementValidity() {
+    if (!this.placement) return;
+    const { data, group, marker } = this.placement,
+      ignored = new Set<string>(data.supportId ? [data.supportId] : []),
+      collision = this.objectCollision(group, data, ignored),
+      inside = Boolean(this.placementPoint(group, data.x, data.z)),
+      needsSupport = this.placement.catalog.placement === "surface",
+      valid = inside && !collision && (!needsSupport || Boolean(data.supportId)),
+      color = valid ? 0x3e9b5f : 0xc14d43;
+    this.placement.valid = valid;
+    marker.material.color.setHex(color);
+    group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      for (const material of materials)
+        if (material instanceof THREE.MeshStandardMaterial) {
+          material.emissive.setHex(color);
+          material.emissiveIntensity = valid ? 0.13 : 0.3;
+        }
+    });
+    const status = document.querySelector<HTMLElement>("#placement-status")!,
+      confirm = document.querySelector<HTMLButtonElement>("#placement-confirm")!;
+    status.textContent = valid
+      ? "Valid position — place here."
+      : needsSupport && !data.supportId
+        ? "Place this object on a table, desk, shelf, or cabinet."
+        : collision
+        ? "This overlaps another object. Choose a clear position."
+        : "This object must stay inside the room.";
+    status.dataset.valid = String(valid);
+    confirm.disabled = !valid;
+  }
+  private updatePlacementFromPointer(event: PointerEvent) {
+    if (!this.placement) return;
+    this.setPointer(event);
+    this.ray.setFromCamera(this.pointer, this.camera);
+    const hit = new THREE.Vector3();
+    if (
+      !this.ray.ray.intersectPlane(
+        new THREE.Plane(new THREE.Vector3(0, 1, 0)),
+        hit,
+      )
+    )
+      return;
+    const { data, group, marker } = this.placement;
+    if (ARCHITECTURAL_KINDS.has(data.kind)) {
+      this.snapDoorToWall(data, hit.x, hit.z);
+      group.position.set(data.x, 0, data.z);
+      group.rotation.y = data.rot;
+    } else if (this.placement.catalog.placement === "wall") {
+      this.positionAgainstNearestWall(data, group, hit.x, hit.z);
+    } else if (this.placement.catalog.placement === "surface") {
+      const supportIntersection = this.ray
+        .intersectObjects([...this.items.values()], true)
+        .find((candidate) => {
+          const owner = this.ownerOf(candidate.object);
+          const supportData = this.data.find(
+            (entry) => entry.id === owner?.userData.itemId,
+          );
+          return Boolean(owner && supportData && SUPPORT_KINDS.has(supportData.kind));
+        });
+      const supportHit = supportIntersection
+        ? this.ownerOf(supportIntersection.object)
+        : undefined;
+      if (supportHit) {
+        data.x = supportIntersection!.point.x;
+        data.z = supportIntersection!.point.z;
+        data.y = this.supportTop(supportHit) + 0.025;
+        data.supportId = supportHit.userData.itemId;
+        group.position.set(data.x, data.y, data.z);
+      } else {
+        data.supportId = undefined;
+        data.x = hit.x;
+        data.z = hit.z;
+        group.position.set(data.x, data.y ?? 0, data.z);
+      }
+    } else {
+      const x = this.gridSnap ? Math.round(hit.x * 2) / 2 : hit.x,
+        z = this.gridSnap ? Math.round(hit.z * 2) / 2 : hit.z,
+        position = this.clampToRoom(group, x, z);
+      data.x = position.x;
+      data.z = position.z;
+      group.position.set(data.x, data.y ?? 0, data.z);
+    }
+    marker.position.set(data.x, 0.025, data.z);
+    this.refreshPlacementValidity();
+  }
+  private positionAgainstNearestWall(
+    data: ItemData,
+    group: THREE.Group,
+    x: number,
+    z: number,
+  ) {
+    const rect = this.roomRects(true).sort((a, b) => {
+        const distance = (r: RoomRect) => {
+          const px = THREE.MathUtils.clamp(x, r.minX, r.maxX),
+            pz = THREE.MathUtils.clamp(z, r.minZ, r.maxZ);
+          return (px - x) ** 2 + (pz - z) ** 2;
+        };
+        return distance(a) - distance(b);
+      })[0],
+      distances = [
+        { side: "back" as const, value: Math.abs(z - rect.minZ) },
+        { side: "front" as const, value: Math.abs(z - rect.maxZ) },
+        { side: "left" as const, value: Math.abs(x - rect.minX) },
+        { side: "right" as const, value: Math.abs(x - rect.maxX) },
+      ],
+      side = distances.sort((a, b) => a.value - b.value)[0].side;
+    data.rot = side === "left" || side === "right" ? Math.PI / 2 : 0;
+    group.rotation.y = data.rot;
+    const size = new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3()),
+      halfX = size.x / 2,
+      halfZ = size.z / 2;
+    data.x = THREE.MathUtils.clamp(x, rect.minX + halfX, rect.maxX - halfX);
+    data.z = THREE.MathUtils.clamp(z, rect.minZ + halfZ, rect.maxZ - halfZ);
+    if (side === "back") data.z = rect.minZ + halfZ + 0.03;
+    if (side === "front") data.z = rect.maxZ - halfZ - 0.03;
+    if (side === "left") data.x = rect.minX + halfX + 0.03;
+    if (side === "right") data.x = rect.maxX - halfX - 0.03;
+    group.position.set(data.x, data.y ?? 0, data.z);
+  }
+  private disposePlacementPreview() {
+    if (!this.placement) return;
+    const { group, marker } = this.placement;
+    this.scene.remove(group, marker);
+    group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      object.geometry.dispose();
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      materials.forEach((material) => material.dispose());
+    });
+    marker.geometry.dispose();
+    marker.material.dispose();
+  }
+  private commitPlacement() {
+    if (!this.placement) return;
+    if (!this.placement.valid) {
+      this.announce("Choose a clear position before placing this object.");
+      return;
+    }
+    const { catalog, data } = this.placement,
+      placed = { ...data, id: crypto.randomUUID() };
+    this.disposePlacementPreview();
+    this.placement = undefined;
+    this.surfaces.setPersistent("placement-toolbar", false);
+    document.body.classList.remove("placing-object");
+    this.add(catalog, placed, true);
+    this.canvas.focus({ preventScroll: true });
+    localStorage.setItem("my-little-room-placement-hint-v1", "complete");
+    this.announce(`${catalog.name} placed and selected. Undo is available.`);
+  }
+  private cancelPlacement(reopenCatalog = true) {
+    if (!this.placement) return;
+    const name = this.placement.catalog.name;
+    this.disposePlacementPreview();
+    this.placement = undefined;
+    this.surfaces.setPersistent("placement-toolbar", false);
+    document.body.classList.remove("placing-object");
+    if (reopenCatalog) this.surfaces.open("catalog", document.querySelector("#catalog-add-tab")!);
+    this.announce(`${name} placement cancelled.`);
   }
   private add(c: CatalogItem, d?: Partial<ItemData>, record = true) {
     if (record) this.checkpoint();
@@ -2077,9 +3157,11 @@ export class Game {
       this.resetCamera();
     }
     this.select(g);
+    this.renderObjectManager();
     if (record) {
       this.audio("place");
       this.changed();
+      this.announce(`${this.objectLabel(data)} added and selected.`);
     }
     return g;
   }
@@ -2771,7 +3853,7 @@ export class Game {
       add(new THREE.BoxGeometry(1.6, 0.08, 0.55), cream, 0, 1.86, -0.08);
     } else if (d.kind === "wardrobe") {
       add(new THREE.BoxGeometry(2.7, 3.8, 1.15), mat, 0, 1.9, 0);
-      add(new THREE.BoxGeometry(0.06, 3.45, 1.0), dark, 0, 2, 0.59);
+      add(new THREE.BoxGeometry(0.035, 3.45, 0.025), dark, 0, 2, 0.588);
       for (const x of [-0.22, 0.22])
         add(new THREE.SphereGeometry(0.07, 10, 8), cream, x, 2, 0.65);
       add(new THREE.BoxGeometry(2.85, 0.18, 1.3), dark, 0, 0.12, 0);
@@ -3512,6 +4594,11 @@ export class Game {
   private pointerDown(e: PointerEvent) {
     if (this.firstPerson) return;
     if ((e.target as HTMLElement) !== this.canvas) return;
+    if (this.placement) {
+      this.updatePlacementFromPointer(e);
+      this.commitPlacement();
+      return;
+    }
     this.setPointer(e);
     this.ray.setFromCamera(this.pointer, this.camera);
     const hits = this.ray.intersectObjects([...this.items.values()], true);
@@ -3523,6 +4610,7 @@ export class Game {
       this.drag = true;
       this.controls.enabled = false;
       const d = this.data.find((x) => x.id === g.userData.itemId);
+      if (d) this.dragValid = true;
       this.doorFollowers = [];
       if (d && ARCHITECTURAL_KINDS.has(d.kind)) {
         const room = this.extensionRect(d);
@@ -3550,6 +4638,10 @@ export class Game {
   }
   private pointerMove(e: PointerEvent) {
     if (this.firstPerson) return;
+    if (this.placement) {
+      this.updatePlacementFromPointer(e);
+      return;
+    }
     if (!this.drag || !this.selected) return;
     this.setPointer(e);
     this.ray.setFromCamera(this.pointer, this.camera);
@@ -3609,7 +4701,11 @@ export class Game {
       const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -top);
       const hit = new THREE.Vector3();
       if (this.ray.ray.intersectPlane(plane, hit)) {
-        const p = this.clampToRoom(this.selected, hit.x, hit.z);
+        const p = this.clampToRoom(
+          this.selected,
+          this.gridSnap ? Math.round(hit.x * 2) / 2 : hit.x,
+          this.gridSnap ? Math.round(hit.z * 2) / 2 : hit.z,
+        );
         d.x = p.x;
         d.z = p.z;
         d.y = top + 0.025;
@@ -3624,7 +4720,11 @@ export class Game {
         )
       ) {
         hit.add(this.dragOffset);
-        const p = this.clampToRoom(this.selected, hit.x, hit.z);
+        const p = this.clampToRoom(
+          this.selected,
+          this.gridSnap ? Math.round(hit.x * 2) / 2 : hit.x,
+          this.gridSnap ? Math.round(hit.z * 2) / 2 : hit.z,
+        );
         d.x = p.x;
         d.z = p.z;
         d.y = this.dragHeight;
@@ -3643,6 +4743,12 @@ export class Game {
         if (childGroup) childGroup.position.set(child.x, child.y, child.z);
       }
     }
+    const ignored = new Set<string>();
+    if (d.supportId) ignored.add(d.supportId);
+    for (const child of this.data.filter((item) => item.supportId === d.id))
+      ignored.add(child.id);
+    this.dragValid = !this.objectCollision(this.selected, d, ignored);
+    this.setDragFeedback(this.dragValid);
   }
   private pointerUp() {
     if (this.drag) {
@@ -3652,10 +4758,33 @@ export class Game {
       this.drag = false;
       this.controls.enabled = true;
       this.doorFollowers = [];
-      if (architectural) this.rebuildRoom();
-      this.audio("place");
-      this.changed();
+      if (!this.dragValid) {
+        const previous = this.history.pop();
+        if (previous) {
+          this.data = previous;
+          this.rebuild();
+        }
+        this.announce("That position overlaps another object. The move was cancelled.");
+      } else {
+        if (architectural) this.rebuildRoom();
+        this.setDragFeedback(true, true);
+        this.audio("place");
+        this.changed();
+      }
+      this.dragValid = true;
     }
+  }
+  private setDragFeedback(valid: boolean, neutral = false) {
+    if (!this.selected) return;
+    const color = neutral ? 0xffd27a : valid ? 0x52b86d : 0xe05247;
+    this.selected.traverse((object) => {
+      if (
+        object instanceof THREE.LineSegments &&
+        object.userData.selectionGlow &&
+        object.material instanceof THREE.LineBasicMaterial
+      )
+        object.material.color.setHex(color);
+    });
   }
   private setPointer(e: PointerEvent) {
     const r = this.canvas.getBoundingClientRect();
@@ -3687,7 +4816,7 @@ export class Game {
   private select(g?: THREE.Group) {
     this.clearSelectionGlow();
     this.selected = g;
-    document.querySelector("#selection")?.classList.toggle("hidden", !g);
+    this.syncSelectionSurface();
     const selectedData = g
       ? this.data.find((item) => item.id === g.userData.itemId)
       : undefined;
@@ -3699,7 +4828,11 @@ export class Game {
       if (button) button.disabled = isDoor;
     }
     if (g) {
-      document.querySelector("#selected-name")!.textContent = g.name;
+      document.querySelector("#selected-name")!.textContent =
+        selectedData?.name ?? g.name;
+      const colorInput = document.querySelector<HTMLInputElement>("#color");
+      if (colorInput && selectedData)
+        colorInput.value = `#${new THREE.Color(selectedData.color).getHexString()}`;
       const meshes: THREE.Mesh[] = [];
       g.traverse((o) => {
         if (o instanceof THREE.Mesh) meshes.push(o);
@@ -3727,6 +4860,31 @@ export class Game {
         mesh.add(outline);
       }
     }
+    this.syncObjectManagerSelection();
+  }
+  private syncSelectionSurface() {
+    const overlayOpen =
+      this.compactToolsQuery.matches &&
+      ["catalog", "room-panel", "file-panel", "secondary-actions"].some(
+        (id) => this.surfaces.isOpen(id),
+      );
+    this.surfaces.setPersistent(
+      "selection",
+      Boolean(this.selected) && !overlayOpen && !this.firstPerson,
+    );
+  }
+  private syncTransformReadout() {
+    const data = this.findData(),
+      output = document.querySelector<HTMLElement>("#selected-transform");
+    if (!data || !output) return;
+    const degrees = ((THREE.MathUtils.radToDeg(data.rot) % 360) + 360) % 360;
+    output.textContent = `${Math.round(degrees)}° · ${Math.round((data.scale ?? 1) * 100)}% · ${(data.y ?? 0).toFixed(1)} high`;
+  }
+  private syncSnapControl() {
+    const button = document.querySelector<HTMLButtonElement>("#snap-toggle");
+    if (!button) return;
+    button.textContent = `⌗ Grid snap: ${this.gridSnap ? "On" : "Off"}`;
+    button.setAttribute("aria-pressed", String(this.gridSnap));
   }
   private keepSelectedInRoom() {
     const d = this.findData();
@@ -3867,6 +5025,18 @@ export class Game {
     this.rebuild();
     this.changed();
   }
+  private setSelectedColor(value: string) {
+    const data = this.findData();
+    if (!data || !this.selected) return;
+    const color = Number.parseInt(value.replace("#", ""), 16);
+    if (!Number.isFinite(color) || color === data.color) return;
+    this.checkpoint();
+    data.color = color;
+    const label = this.objectLabel(data);
+    this.rebuild();
+    this.changed();
+    this.announce(`${label} color changed to ${value.toUpperCase()}.`);
+  }
   private duplicate() {
     const d = this.findData();
     if (!d) return;
@@ -3893,6 +5063,7 @@ export class Game {
       this.resetCamera();
     }
     this.select(undefined);
+    this.renderObjectManager();
     this.audio("remove");
     this.changed();
   }
@@ -3930,6 +5101,7 @@ export class Game {
       this.scene.add(g);
     }
     if (selectedId) this.select(this.items.get(selectedId));
+    this.renderObjectManager();
     this.updateButtons();
   }
   private updateButtons() {
@@ -3937,17 +5109,30 @@ export class Game {
       !this.history.length;
     (document.querySelector("#redo") as HTMLButtonElement).disabled =
       !this.future.length;
+    const managerUndo = document.querySelector<HTMLButtonElement>(
+      "#object-manager-undo",
+    );
+    if (managerUndo) managerUndo.disabled = !this.history.length;
   }
   private changed() {
     clearTimeout(this.saveTimer);
+    this.setSaveState("Saving…", "saving");
     this.saveTimer = window.setTimeout(() => {
       localStorage.setItem("my-little-room-v1", JSON.stringify(this.data));
+      this.setSaveState("Saved", "saved");
       const t = document.querySelector("#toast")!;
       t.classList.add("show");
       setTimeout(() => t.classList.remove("show"), 1400);
     }, 450);
     this.publish();
     this.updateButtons();
+    this.syncTransformReadout();
+  }
+  private setSaveState(label: string, state: "saving" | "saved" | "error") {
+    const status = document.querySelector<HTMLElement>("#save-state");
+    if (!status) return;
+    status.textContent = label;
+    status.dataset.state = state;
   }
   private addEditableDefaultsOnce() {
     const migrationKey = "my-little-room-editable-fixtures-v1";
@@ -4028,6 +5213,7 @@ export class Game {
     this.applyTimeOfDay();
     this.saveRoomSettings();
     this.audio("chime");
+    this.announce(`Lighting changed to ${this.evening ? "Evening" : "Afternoon"}.`);
   }
   private applyTimeOfDay() {
     (this.scene.background as THREE.Color).setHex(
@@ -4038,39 +5224,45 @@ export class Game {
     );
     if (this.keyLight) this.keyLight.intensity = this.evening ? 42 : 80;
     if (this.lampLight) this.lampLight.intensity = this.evening ? 14 : 5;
-    document.querySelector("#time-toggle")!.textContent = this.evening
-      ? "☾ Evening"
-      : "☀ Afternoon";
+    const button = document.querySelector<HTMLButtonElement>("#time-toggle")!;
+    button.textContent = this.evening
+      ? "☾ Lighting: Evening"
+      : "☀ Lighting: Afternoon";
+    button.setAttribute("aria-pressed", String(this.evening));
+    button.setAttribute(
+      "aria-label",
+      this.evening
+        ? "Lighting: Evening. Switch to afternoon"
+        : "Lighting: Afternoon. Switch to evening",
+    );
   }
   private async openPhotoStudio() {
-    document.querySelector("#catalog")?.classList.add("closed");
-    document.querySelector("#room-panel")?.classList.add("closed");
-    document.querySelector("#file-panel")?.classList.add("closed");
+    this.surfaces.close("catalog", false);
+    this.surfaces.close("room-panel", false);
+    this.surfaces.close("file-panel", false);
+    if (this.compactToolsQuery.matches)
+      this.surfaces.close("secondary-actions", false);
     this.select(undefined);
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
     await this.playCameraEffect();
     await this.capturePhoto();
-    const studio = document.querySelector<HTMLElement>("#photo-studio")!;
-    studio.classList.remove("closed");
-    studio.setAttribute("aria-hidden", "false");
-    document.querySelector<HTMLButtonElement>("#close-photo")?.focus();
+    this.surfaces.open(
+      "photo-studio",
+      document.querySelector<HTMLButtonElement>("#close-photo"),
+    );
   }
   private async retakePhoto() {
-    const studio = document.querySelector<HTMLElement>("#photo-studio")!;
-    studio.classList.add("closed");
-    studio.setAttribute("aria-hidden", "true");
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
     await this.playCameraEffect();
     await this.capturePhoto();
-    studio.classList.remove("closed");
-    studio.setAttribute("aria-hidden", "false");
     document.querySelector<HTMLButtonElement>("#close-photo")?.focus();
   }
   private async playCameraEffect() {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      this.audio("camera");
+      return;
+    }
     const shutter = document.querySelector<HTMLElement>("#camera-shutter")!;
     shutter.classList.remove("firing");
     void shutter.offsetWidth;
@@ -4080,13 +5272,11 @@ export class Game {
     shutter.classList.remove("firing");
   }
   private closePhotoStudio() {
-    const studio = document.querySelector<HTMLElement>("#photo-studio");
-    if (!studio || studio.classList.contains("closed")) return;
+    if (!this.surfaces.isOpen("photo-studio")) return;
     this.photoCaptureId++;
-    studio.classList.add("closed");
+    const studio = document.querySelector<HTMLElement>("#photo-studio")!;
     studio.classList.remove("busy");
-    studio.setAttribute("aria-hidden", "true");
-    document.querySelector<HTMLButtonElement>("#open-photo")?.focus();
+    this.surfaces.close("photo-studio");
   }
   private setPhotoStatus(
     message: string,
@@ -4362,9 +5552,12 @@ export class Game {
   }
   private enterFirstPerson() {
     if (this.firstPerson) return;
-    document.querySelector("#catalog")?.classList.add("closed");
-    document.querySelector("#room-panel")?.classList.add("closed");
-    document.querySelector("#file-panel")?.classList.add("closed");
+    this.surfaces.close("catalog", false);
+    this.surfaces.close("room-panel", false);
+    this.surfaces.close("file-panel", false);
+    if (this.compactToolsQuery.matches)
+      this.surfaces.close("secondary-actions", false);
+    this.editorSelectedId = this.selected?.userData.itemId;
     this.select(undefined);
     this.editorCameraState = {
       position: this.camera.position.clone(),
@@ -4383,13 +5576,19 @@ export class Game {
     this.camera.updateProjectionMatrix();
     this.applyFirstPersonLook();
     document.body.classList.add("first-person");
-    const hud = document.querySelector<HTMLElement>("#walk-hud")!,
-      button = document.querySelector<HTMLButtonElement>("#walk-toggle")!;
-    hud.setAttribute("aria-hidden", "false");
+    const button = document.querySelector<HTMLButtonElement>("#walk-toggle")!;
+    this.surfaces.setPersistent("walk-hud", true);
     button.classList.add("active");
     button.textContent = "✕ Exit walk";
     button.setAttribute("aria-pressed", "true");
     this.syncFirstPersonHeightControl();
+    const touchHint = document.querySelector<HTMLElement>("#walk-touch-hint");
+    if (touchHint) {
+      const shouldShow = matchMedia("(pointer: coarse)").matches &&
+        !localStorage.getItem("my-little-room-walk-hint-v1");
+      touchHint.hidden = !shouldShow;
+    }
+    this.announce("Walk mode. Editing is paused; press Escape to exit.");
   }
   private exitFirstPerson() {
     if (!this.firstPerson) return;
@@ -4406,12 +5605,15 @@ export class Game {
     this.controls.enabled = true;
     this.controls.update();
     document.body.classList.remove("first-person");
-    const hud = document.querySelector<HTMLElement>("#walk-hud")!,
-      button = document.querySelector<HTMLButtonElement>("#walk-toggle")!;
-    hud.setAttribute("aria-hidden", "true");
+    const button = document.querySelector<HTMLButtonElement>("#walk-toggle")!;
+    this.surfaces.setPersistent("walk-hud", false);
     button.classList.remove("active");
     button.textContent = "◎ Walk";
     button.setAttribute("aria-pressed", "false");
+    document.querySelector<HTMLElement>("#walk-touch-hint")!.hidden = true;
+    if (this.editorSelectedId) this.select(this.items.get(this.editorSelectedId));
+    this.editorSelectedId = undefined;
+    this.announce("Walk mode closed. Editor view restored.");
   }
   private applyFirstPersonLook() {
     this.camera.rotation.set(
@@ -4504,8 +5706,7 @@ export class Game {
   }
   private updateFirstPerson(delta: number) {
     if (!this.firstPerson) return;
-    if (!document.querySelector("#photo-studio")?.classList.contains("closed"))
-      return;
+    if (this.surfaces.isOpen("photo-studio")) return;
     const forwardAmount =
         Number(
           this.firstPersonInputs.has("KeyW") ||
@@ -4622,6 +5823,10 @@ export class Game {
     o.stop(ctx.currentTime + 0.35);
   }
   private update(d: number, e: number) {
+    if (d > 0) {
+      this.frameTimes.push(d * 1000);
+      if (this.frameTimes.length > 120) this.frameTimes.shift();
+    }
     resizeRenderer(
       this.renderer,
       this.camera,
@@ -4646,11 +5851,42 @@ export class Game {
   }
   private publish() {
     const info = this.renderer.info.render,
-      ratios = this.shapeRatios();
+      ratios = this.shapeRatios(),
+      frameTimeMs = this.frameTimes.length
+        ? this.frameTimes.reduce((sum, value) => sum + value, 0) / this.frameTimes.length
+        : 0;
+    const now = performance.now();
+    if (
+      now - this.diagnosticsObjectsUpdatedAt >= 100 ||
+      this.diagnosticsObjects.length !== this.data.length
+    ) {
+      const canvasRect = this.canvas.getBoundingClientRect();
+      this.diagnosticsObjects = this.data.map((data) => {
+        const group = this.items.get(data.id),
+          source = group?.position;
+        this.diagnosticsProjection
+          .set(source?.x ?? data.x, source?.y ?? data.y ?? 0, source?.z ?? data.z)
+          .project(this.camera);
+        return {
+          id: data.id,
+          kind: data.kind,
+          scale: data.scale ?? 1,
+          screen: {
+            x:
+              canvasRect.left +
+              ((this.diagnosticsProjection.x + 1) / 2) * canvasRect.width,
+            y:
+              canvasRect.top +
+              ((1 - this.diagnosticsProjection.y) / 2) * canvasRect.height,
+          },
+        };
+      });
+      this.diagnosticsObjectsUpdatedAt = now;
+    }
     window.__THREE_GAME_DIAGNOSTICS__ = {
       frame: (window.__THREE_GAME_DIAGNOSTICS__?.frame || 0) + 1,
-      fps: 0,
-      frameTimeMs: 0,
+      fps: frameTimeMs ? 1000 / frameTimeMs : 0,
+      frameTimeMs,
       state: this.firstPerson
         ? "walking"
         : this.selected
@@ -4674,6 +5910,7 @@ export class Game {
         yaw: this.firstPersonYaw,
         pitch: this.firstPersonPitch,
         fov: this.camera.fov,
+        distance: this.camera.position.distanceTo(this.controls.target),
         wallOpacity: Object.fromEntries(
           this.roomWalls.map((wall) => [wall.side, wall.opacity]),
         ) as Record<RoomWallSide, number>,
@@ -4686,6 +5923,20 @@ export class Game {
         crossbarDepth: ratios.depth,
       },
       entities: { pickups: this.data.length, total: this.data.length + 1 },
+      editor: {
+        selectedId: this.selected?.userData.itemId ?? null,
+        historyLength: this.history.length,
+        futureLength: this.future.length,
+        placement: this.placement
+          ? {
+              kind: this.placement.data.kind,
+              valid: this.placement.valid,
+              x: this.placement.data.x,
+              z: this.placement.data.z,
+            }
+          : null,
+        objects: this.diagnosticsObjects,
+      },
       renderer: {
         calls: info.calls,
         triangles: info.triangles,

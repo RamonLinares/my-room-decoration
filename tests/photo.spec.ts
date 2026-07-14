@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { clickRoomTool, enterRoom } from './helpers';
 
 test('captures the current room view with a camera shutter effect', async ({
   page,
 }, testInfo) => {
-  test.setTimeout(45_000);
+  test.setTimeout(90_000);
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   page.on('console', (message) => {
@@ -12,14 +13,39 @@ test('captures the current room view with a camera shutter effect', async ({
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   await page.goto('/');
-  await page.locator('#welcome').evaluate((element) => element.classList.add('gone'));
+  await enterRoom(page);
   const canvasRatio = await page.locator('#game-canvas').evaluate((canvas) => {
     const rect = canvas.getBoundingClientRect();
     return rect.width / rect.height;
   });
 
-  await page.locator('#open-photo').evaluate((element: HTMLButtonElement) => element.click());
-  await expect(page.locator('#camera-shutter')).toHaveClass(/firing/);
+  await page.evaluate(() => {
+    (window as Window & { __shutterSeen?: boolean }).__shutterSeen = false;
+    const shutter = document.querySelector('#camera-shutter')!;
+    const observer = new MutationObserver((records) => {
+      const fired =
+        shutter.classList.contains('firing') ||
+        records.some((record) =>
+          (record.oldValue ?? '').split(/\s+/).includes('firing'),
+        );
+      if (!fired) return;
+      (window as Window & { __shutterSeen?: boolean }).__shutterSeen = true;
+      observer.disconnect();
+    });
+    observer.observe(shutter, {
+      attributes: true,
+      attributeFilter: ['class'],
+      attributeOldValue: true,
+    });
+  });
+  await clickRoomTool(page, '#open-photo');
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as Window & { __shutterSeen?: boolean }).__shutterSeen,
+      ),
+    )
+    .toBe(true);
   await expect(page.locator('#photo-studio')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('#photo-status')).toContainText('Current view captured');
 

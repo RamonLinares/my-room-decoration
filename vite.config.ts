@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  base: process.env.GITHUB_ACTIONS ? '/my-room-decoration/' : '/',
   server: {
     host: '127.0.0.1',
     port: 5188,
@@ -12,7 +13,7 @@ export default defineConfig({
     strictPort: true,
   },
   build: {
-    sourcemap: true,
-    chunkSizeWarningLimit: 900,
+    sourcemap: false,
+    chunkSizeWarningLimit: 750,
   },
 });

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { enterRoom } from './helpers';
 
 test('the My room collection exposes and renders every photo-derived prop', async ({
   page,
@@ -12,8 +13,10 @@ test('the My room collection exposes and renders every photo-derived prop', asyn
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   await page.goto('/');
-  await page.locator('#welcome').evaluate((element) => element.classList.add('gone'));
+  await enterRoom(page);
   await page.locator('#sound').click();
+  if (await page.locator('#catalog').evaluate((element) => element.hasAttribute('inert')))
+    await page.locator('#open-catalog').click();
   await page.locator('[data-cat="realroom"]').click();
 
   const items = page.locator('#items .item');
@@ -21,12 +24,11 @@ test('the My room collection exposes and renders every photo-derived prop', asyn
   await items.evaluateAll((buttons) => {
     for (const button of buttons) {
       (button as HTMLButtonElement).click();
-      (document.querySelector('#remove') as HTMLButtonElement).click();
+      (document.querySelector('#placement-cancel') as HTMLButtonElement).click();
     }
     (buttons[2] as HTMLButtonElement).click();
+    (document.querySelector('#placement-confirm') as HTMLButtonElement).click();
   });
-
-  await page.locator('#close-catalog').evaluate((button: HTMLButtonElement) => button.click());
   await expect
     .poll(() => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.entities.pickups))
     .toBeGreaterThanOrEqual(1);

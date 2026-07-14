@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
+import { enterRoom } from './helpers';
 
 type CanvasSample = {
   ok: boolean;
@@ -53,26 +54,30 @@ test('renders a nonblank interactive game canvas', async ({ page }, testInfo) =>
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   await page.goto('/');
+  await enterRoom(page);
   await expect(page.locator('#game-canvas')).toBeVisible();
   await page.waitForFunction(() => (window.__THREE_GAME_DIAGNOSTICS__?.frame ?? 0) > 10);
 
   const sample = await sampleCanvas(page);
   expect(sample, JSON.stringify(sample)).toMatchObject({ ok: true });
 
+  await page.locator('#walk-toggle').click();
   const before = await page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.player.position.z ?? 0);
 
   if (testInfo.project.name.includes('mobile')) {
-    const stick = page.locator('#touch-stick');
-    await expect(stick).toBeVisible();
-    const box = await stick.boundingBox();
-    expect(box).not.toBeNull();
-    if (box) {
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.05, { steps: 6 });
-      await page.waitForTimeout(450);
-      await page.mouse.up();
-    }
+    const forward = page.locator('[data-walk="forward"]');
+    await expect(forward).toBeVisible();
+    await forward.dispatchEvent('pointerdown', {
+      pointerId: 31,
+      pointerType: 'touch',
+      isPrimary: true,
+    });
+    await page.waitForTimeout(450);
+    await forward.dispatchEvent('pointerup', {
+      pointerId: 31,
+      pointerType: 'touch',
+      isPrimary: true,
+    });
   } else {
     await page.keyboard.down('KeyW');
     await page.waitForTimeout(450);
@@ -97,7 +102,7 @@ test('fades only the room walls nearest the orbit camera', async ({ page }, test
   test.skip(!testInfo.project.name.includes('desktop'), 'Orbit regression uses desktop pointer controls');
 
   await page.goto('/');
-  await page.locator('#welcome').evaluate((element) => element.classList.add('gone'));
+  await enterRoom(page);
   await page.waitForFunction(() => (window.__THREE_GAME_DIAGNOSTICS__?.frame ?? 0) > 10);
 
   const initial = await page.evaluate(

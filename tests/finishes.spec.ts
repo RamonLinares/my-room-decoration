@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
+import { clickRoomTool, enterRoom } from './helpers';
 
 test('wallpaper and flooring styles render and persist', async ({ page }, testInfo) => {
   const consoleErrors: string[] = [];
@@ -10,14 +11,16 @@ test('wallpaper and flooring styles render and persist', async ({ page }, testIn
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   await page.goto('/');
-  await page.locator('#welcome').evaluate((element) => element.classList.add('gone'));
-  await page.locator('#open-room').evaluate((button: HTMLButtonElement) => button.click());
+  await enterRoom(page);
+  await page.locator('#open-room').click();
 
   await expect(page.locator('[data-wall-style]')).toHaveCount(8);
   await expect(page.locator('[data-floor-style]')).toHaveCount(8);
+  await page.locator('.room-section summary').filter({ hasText: 'Walls' }).click();
   await page.locator('[data-wall-style="botanical"]').click();
-  await page.locator('[data-floor-style="herringbone"]').click();
   await page.locator('[data-wall-color="#b9c5ad"]').click();
+  await page.locator('.room-section summary').filter({ hasText: 'Floor' }).click();
+  await page.locator('[data-floor-style="herringbone"]').click();
   await page.locator('[data-floor-color="#b38255"]').click();
 
   await expect(page.locator('[data-wall-style="botanical"]')).toHaveClass(/active/);
@@ -32,8 +35,10 @@ test('wallpaper and flooring styles render and persist', async ({ page }, testIn
     .toBeGreaterThanOrEqual(2);
 
   if (!testInfo.project.name.includes('mobile')) {
+    await page.locator('#close-room').click();
+    await clickRoomTool(page, '#open-files');
     const downloadPromise = page.waitForEvent('download');
-    await page.locator('#save-xml').evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator('#save-xml').click();
     const download = await downloadPromise;
     const path = await download.path();
     expect(path).not.toBeNull();

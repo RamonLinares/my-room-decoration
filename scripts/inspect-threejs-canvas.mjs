@@ -99,6 +99,13 @@ async function main() {
 
   await page.goto(args.url, { waitUntil: 'networkidle' });
   await page.waitForSelector('canvas', { state: 'visible', timeout: 10_000 });
+  const begin = page.getByRole('button', { name: 'Open the door' });
+  if (await begin.isVisible()) await begin.click();
+  await page.waitForFunction(
+    () => Boolean(window.__THREE_GAME_DIAGNOSTICS__),
+    undefined,
+    { timeout: 20_000 },
+  );
   await page.waitForTimeout(args.wait);
 
   const result = await sampleCanvas(page);

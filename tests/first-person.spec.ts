@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { clickRoomTool, enterRoom } from './helpers';
 
 test('walk mode moves, looks, zooms, and captures the live view', async ({
   page,
@@ -12,8 +13,8 @@ test('walk mode moves, looks, zooms, and captures the live view', async ({
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   await page.goto('/');
-  await page.locator('#welcome').evaluate((element) => element.classList.add('gone'));
-  await page.locator('#walk-toggle').evaluate((button: HTMLButtonElement) => button.click());
+  await enterRoom(page);
+  await page.locator('#walk-toggle').click();
   await expect(page.locator('body')).toHaveClass(/first-person/);
   await expect(page.locator('#walk-hud')).toHaveAttribute('aria-hidden', 'false');
   await expect
@@ -104,7 +105,7 @@ test('walk mode moves, looks, zooms, and captures the live view', async ({
       .toBeGreaterThan(0.1);
   }
 
-  await page.locator('#open-photo').evaluate((button: HTMLButtonElement) => button.click());
+  await clickRoomTool(page, '#open-photo');
   await expect(page.locator('#camera-shutter')).toHaveClass(/firing/);
   await expect(page.locator('#photo-studio')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('#photo-status')).toContainText('Current view captured');

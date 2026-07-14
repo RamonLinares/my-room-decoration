@@ -10,6 +10,7 @@ interface ThreeGameDiagnostics {
     yaw: number;
     pitch: number;
     fov: number;
+    distance: number;
     wallOpacity: Record<"back" | "front" | "left" | "right", number>;
   };
   room: {
@@ -20,6 +21,23 @@ interface ThreeGameDiagnostics {
     crossbarDepth: number;
   };
   entities: { pickups: number; total: number };
+  editor: {
+    selectedId: string | null;
+    historyLength: number;
+    futureLength: number;
+    placement: {
+      kind: string;
+      valid: boolean;
+      x: number;
+      z: number;
+    } | null;
+    objects: Array<{
+      id: string;
+      kind: string;
+      scale: number;
+      screen: { x: number; y: number };
+    }>;
+  };
   renderer: {
     calls: number;
     triangles: number;
