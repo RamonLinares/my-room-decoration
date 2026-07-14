@@ -16,6 +16,28 @@ concurrency:
 
 jobs:
   verify:
+    name: Verify ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: desktop-chrome
+            browser: chromium
+          - project: mobile-safari
+            browser: webkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npm test -- --project=${{ matrix.project }} --workers=1
+
+  package:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,17 +46,15 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium webkit
       - run: npm run build
       - run: npm run lint:css
-      - run: npm test
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
   deploy:
-    needs: verify
+    needs: package
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
