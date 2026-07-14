@@ -72,21 +72,33 @@ test('renders a nonblank interactive game canvas', async ({ page }, testInfo) =>
       pointerType: 'touch',
       isPrimary: true,
     });
-    await page.waitForTimeout(450);
-    await forward.dispatchEvent('pointerup', {
-      pointerId: 31,
-      pointerType: 'touch',
-      isPrimary: true,
-    });
+    try {
+      await expect
+        .poll(
+          async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.player.position.z ?? 0),
+          { timeout: 10_000 },
+        )
+        .toBeLessThan(before - 0.3);
+    } finally {
+      await forward.dispatchEvent('pointerup', {
+        pointerId: 31,
+        pointerType: 'touch',
+        isPrimary: true,
+      });
+    }
   } else {
     await page.keyboard.down('KeyW');
-    await page.waitForTimeout(450);
-    await page.keyboard.up('KeyW');
+    try {
+      await expect
+        .poll(
+          async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.player.position.z ?? 0),
+          { timeout: 10_000 },
+        )
+        .toBeLessThan(before - 0.3);
+    } finally {
+      await page.keyboard.up('KeyW');
+    }
   }
-
-  await expect
-    .poll(async () => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.player.position.z ?? 0))
-    .toBeLessThan(before - 0.3);
 
   const screenshot = await page.screenshot({ fullPage: true });
   await testInfo.attach(`${testInfo.project.name}-game`, {
