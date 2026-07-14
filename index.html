@@ -2,23 +2,408 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
     <meta name="theme-color" content="#2b1f1a" />
     <link rel="icon" href="./favicon.ico" />
     <title>My Little Room</title>
-    <script type="module" crossorigin src="/my-room-decoration/assets/index-C2OXboHe.js"></script>
-    <link rel="stylesheet" crossorigin href="/my-room-decoration/assets/index-CXX6QDE5.css">
+    <script type="module" crossorigin src="/my-room-decoration/assets/index-B2As6f9I.js"></script>
+    <link rel="stylesheet" crossorigin href="/my-room-decoration/assets/index-CsMFM64l.css">
   </head>
   <body>
     <main id="app">
       <canvas id="game-canvas" aria-label="Your miniature room"></canvas>
-      <header id="topbar"><div><span class="eyebrow">MY LITTLE ROOM</span><h1>A room of your own</h1><p id="prompt">Add three little things that feel like home.</p></div><div class="top-actions"><button id="undo" title="Undo">↶</button><button id="redo" title="Redo">↷</button><button id="sound" title="Sound">♪</button></div></header>
-      <aside id="catalog"><div class="handle"></div><div class="catalog-head"><div><span class="eyebrow">THE TOY CHEST · 58 PIECES</span><h2>Choose something lovely</h2></div><button id="close-catalog" class="panel-close" aria-label="Close inventory">×</button></div><div class="catalog-body"><form id="catalog-search" role="search"><span aria-hidden="true">⌕</span><input id="item-search" type="search" autocomplete="off" placeholder="Search objects…" aria-label="Search objects"></form><div id="categories"><button class="active" data-cat="all">All</button><button data-cat="beds">Beds</button><button data-cat="furniture">Furniture</button><button data-cat="workspace">Workspace</button><button data-cat="light">Glow</button><button data-cat="decor">Decor</button><button data-cat="keepsake">Memories</button><button data-cat="plant">Growing</button></div><div id="items"></div><p id="no-results" hidden>No little treasures found.</p></div></aside>
-      <aside id="room-panel" class="closed"><div class="room-head"><div><span class="eyebrow">ROOM SHAPE</span><h2>Shape your little room</h2></div><button id="close-room" class="panel-close" aria-label="Close room editor">×</button></div><span class="room-label">Floor plan</span><div class="shape-presets" aria-label="Floor plan presets"><button data-shape="rectangle"><span>▭</span>Rectangle</button><button data-shape="l"><span>◰</span>L shape</button><button data-shape="t"><span>⊤</span>T shape</button><button data-shape="u"><span>∪</span>U shape</button></div><div id="shape-tuning" class="shape-tuning" hidden><label class="room-slider"><span><span id="shape-width-label">Wing width</span><output id="shape-width-value">57%</output></span><input id="shape-width" type="range" min="0" max="100" step="1" value="55"></label><label class="room-slider"><span>Crossbar depth <output id="shape-depth-value">57%</output></span><input id="shape-depth" type="range" min="0" max="100" step="1" value="55"></label></div><label class="room-slider"><span>Room width <output id="room-width-value">14</output></span><input id="room-width" type="range" min="10" max="20" step="1" value="14"></label><label class="room-slider"><span>Room depth <output id="room-depth-value">11</output></span><input id="room-depth" type="range" min="8" max="16" step="1" value="11"></label><span class="room-label size-label">Room size</span><div class="room-presets" aria-label="Room size presets"><button data-room="cozy">Cozy</button><button data-room="square">Square</button><button data-room="wide">Wide</button><button data-room="deep">Deep</button></div><p>Furniture stays on the floor plan when its shape or size changes.</p></aside>
-      <section id="selection" class="hidden"><span id="selected-name">Keepsake</span><button id="rotate-left">↶ Rotate</button><button id="rotate-right">Rotate ↷</button><button id="lower" aria-label="Lower selected object">↓ Lower</button><button id="raise" aria-label="Raise selected object">↑ Raise</button><button id="smaller">− Smaller</button><button id="larger">＋ Larger</button><button id="color">Color</button><button id="duplicate">Duplicate</button><button id="remove" class="danger">Remove</button></section>
-      <nav id="dock"><button id="open-catalog" class="primary">＋ Objects</button><button id="open-room">▱ Room</button><button id="time-toggle">☀ Afternoon</button><button id="reset-view">⌂ Home</button></nav>
+      <header id="topbar">
+        <div>
+          <span class="eyebrow">MY LITTLE ROOM</span>
+          <div class="room-name-row">
+            <h1
+              id="room-name"
+              contenteditable="plaintext-only"
+              role="textbox"
+              aria-label="Room name"
+              aria-multiline="false"
+              aria-describedby="room-name-hint"
+              spellcheck="false"
+              title="Click to rename your room"
+            >
+              A room of your own
+            </h1>
+            <span class="rename-mark" aria-hidden="true">✎</span>
+            <span id="room-name-hint" class="sr-only"
+              >Click to edit. Press Enter when finished.</span
+            >
+          </div>
+        </div>
+        <div class="top-actions">
+          <button id="undo" title="Undo">↶</button
+          ><button id="redo" title="Redo">↷</button
+          ><button
+            id="sound"
+            title="Mute sound"
+            aria-label="Mute sound"
+            aria-pressed="false"
+          >
+            ♪
+          </button>
+        </div>
+      </header>
+      <aside id="catalog">
+        <div class="handle"></div>
+        <div class="catalog-head">
+          <div>
+            <span id="catalog-count" class="eyebrow">THE TOY CHEST</span>
+            <h2>Choose something lovely</h2>
+          </div>
+          <button
+            id="close-catalog"
+            class="panel-close"
+            aria-label="Close inventory"
+          >
+            ×
+          </button>
+        </div>
+        <div class="catalog-body">
+          <form id="catalog-search" role="search">
+            <span aria-hidden="true">⌕</span
+            ><input
+              id="item-search"
+              type="search"
+              autocomplete="off"
+              placeholder="Search objects…"
+              aria-label="Search objects"
+            />
+          </form>
+          <div id="categories">
+            <button class="active" data-cat="all">All</button
+            ><button data-cat="beds">Beds</button
+            ><button data-cat="furniture">Furniture</button
+            ><button data-cat="workspace">Workspace</button
+            ><button data-cat="light">Glow</button
+            ><button data-cat="decor">Decor</button
+            ><button data-cat="keepsake">Memories</button
+            ><button data-cat="plant">Growing</button
+            ><button data-cat="realroom">My room</button>
+          </div>
+          <p id="catalog-summary" aria-live="polite"></p>
+          <div id="items"></div>
+          <p id="no-results" hidden>No little treasures found.</p>
+        </div>
+      </aside>
+      <aside id="room-panel" class="closed">
+        <div class="room-head">
+          <div>
+            <span class="eyebrow">ROOM SHAPE</span>
+            <h2>Shape your little room</h2>
+          </div>
+          <button
+            id="close-room"
+            class="panel-close"
+            aria-label="Close room editor"
+          >
+            ×
+          </button>
+        </div>
+        <span class="room-label">Floor plan</span>
+        <div class="shape-presets" aria-label="Floor plan presets">
+          <button data-shape="rectangle"><span>▭</span>Rectangle</button
+          ><button data-shape="l"><span>◰</span>L shape</button
+          ><button data-shape="t"><span>⊤</span>T shape</button
+          ><button data-shape="u"><span>∪</span>U shape</button>
+        </div>
+        <div id="shape-tuning" class="shape-tuning" hidden>
+          <label class="room-slider"
+            ><span
+              ><span id="shape-width-label">Wing width</span
+              ><output id="shape-width-value">57%</output></span
+            ><input
+              id="shape-width"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value="55" /></label
+          ><label class="room-slider"
+            ><span
+              >Crossbar depth <output id="shape-depth-value">57%</output></span
+            ><input
+              id="shape-depth"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value="55"
+          /></label>
+        </div>
+        <label class="room-slider"
+          ><span>Room width <output id="room-width-value">14</output></span
+          ><input
+            id="room-width"
+            type="range"
+            min="10"
+            max="20"
+            step="1"
+            value="14" /></label
+        ><label class="room-slider"
+          ><span>Room depth <output id="room-depth-value">11</output></span
+          ><input
+            id="room-depth"
+            type="range"
+            min="8"
+            max="16"
+            step="1"
+            value="11" /></label
+        ><span class="room-label size-label">Room size</span>
+        <div class="room-presets" aria-label="Room size presets">
+          <button data-room="cozy">Cozy</button
+          ><button data-room="square">Square</button
+          ><button data-room="wide">Wide</button
+          ><button data-room="deep">Deep</button>
+        </div>
+        <span class="room-label">Wall paint</span>
+        <div class="finish-picker" aria-label="Wall paint colors">
+          <button
+            class="finish-swatch"
+            data-wall-color="#e8d7b8"
+            style="--swatch: #e8d7b8"
+            aria-label="Warm cream wall paint"
+          ></button>
+          <button
+            class="finish-swatch"
+            data-wall-color="#e3c2b7"
+            style="--swatch: #e3c2b7"
+            aria-label="Dusty blush wall paint"
+          ></button>
+          <button
+            class="finish-swatch"
+            data-wall-color="#b9c5ad"
+            style="--swatch: #b9c5ad"
+            aria-label="Soft sage wall paint"
+          ></button>
+          <button
+            class="finish-swatch"
+            data-wall-color="#b8cbd0"
+            style="--swatch: #b8cbd0"
+            aria-label="Misty blue wall paint"
+          ></button>
+          <button
+            class="finish-swatch"
+            data-wall-color="#e7d29c"
+            style="--swatch: #e7d29c"
+            aria-label="Butter yellow wall paint"
+          ></button>
+          <label class="custom-swatch" aria-label="Custom wall paint"
+            ><input id="wall-color-custom" type="color" value="#e8d7b8"
+          /></label>
+        </div>
+        <span class="room-label finish-label">Wallpaper pattern</span>
+        <div class="finish-style-picker" aria-label="Wallpaper patterns">
+          <button class="finish-style active" data-wall-style="paint" aria-label="Plain paint"><span class="finish-preview style-paint"></span><small>Paint</small></button>
+          <button class="finish-style" data-wall-style="linen" aria-label="Linen wallpaper"><span class="finish-preview style-linen"></span><small>Linen</small></button>
+          <button class="finish-style" data-wall-style="pinstripe" aria-label="Pinstripe wallpaper"><span class="finish-preview style-pinstripe"></span><small>Stripe</small></button>
+          <button class="finish-style" data-wall-style="gingham" aria-label="Gingham wallpaper"><span class="finish-preview style-gingham"></span><small>Gingham</small></button>
+          <button class="finish-style" data-wall-style="botanical" aria-label="Botanical wallpaper"><span class="finish-preview style-botanical"></span><small>Botanical</small></button>
+          <button class="finish-style" data-wall-style="scallop" aria-label="Scallop wallpaper"><span class="finish-preview style-scallop"></span><small>Scallop</small></button>
+          <button class="finish-style" data-wall-style="tiny-floral" aria-label="Tiny floral wallpaper"><span class="finish-preview style-tiny-floral"></span><small>Floral</small></button>
+          <button class="finish-style" data-wall-style="soft-brick" aria-label="Soft brick wallpaper"><span class="finish-preview style-soft-brick"></span><small>Brick</small></button>
+        </div>
+        <span class="room-label">Floor finish</span>
+        <div class="finish-picker" aria-label="Floor finish colors">
+          <button
+            class="finish-swatch"
+            data-floor-color="#8d6548"
+            style="--swatch: #8d6548"
+            aria-label="Warm oak flooring"
+          ></button>
+          <button
+            class="finish-swatch"
+            data-floor-color="#b38255"
+            style="--swatch: #b38255"
+            aria-label="Honey oak flooring"
+          ></button>
+          <button
+            class="finish-swatch"
+            data-floor-color="#5f4234"
+            style="--swatch: #5f4234"
+            aria-label="Walnut flooring"
+          ></button>
+          <button
+            class="finish-swatch"
+            data-floor-color="#c2aa86"
+            style="--swatch: #c2aa86"
+            aria-label="Pale ash flooring"
+          ></button>
+          <button
+            class="finish-swatch"
+            data-floor-color="#8a948b"
+            style="--swatch: #8a948b"
+            aria-label="Painted pine flooring"
+          ></button>
+          <label class="custom-swatch" aria-label="Custom floor finish"
+            ><input id="floor-color-custom" type="color" value="#8d6548"
+          /></label>
+        </div>
+        <span class="room-label finish-label">Floor material</span>
+        <div class="finish-style-picker" aria-label="Floor materials">
+          <button class="finish-style active" data-floor-style="planks" aria-label="Wood planks"><span class="finish-preview style-planks"></span><small>Planks</small></button>
+          <button class="finish-style" data-floor-style="herringbone" aria-label="Herringbone wood"><span class="finish-preview style-herringbone"></span><small>Herringbone</small></button>
+          <button class="finish-style" data-floor-style="parquet" aria-label="Parquet floor"><span class="finish-preview style-parquet"></span><small>Parquet</small></button>
+          <button class="finish-style" data-floor-style="checker" aria-label="Checker floor"><span class="finish-preview style-checker"></span><small>Checker</small></button>
+          <button class="finish-style" data-floor-style="tile" aria-label="Square tile floor"><span class="finish-preview style-tile"></span><small>Tile</small></button>
+          <button class="finish-style" data-floor-style="terrazzo" aria-label="Terrazzo floor"><span class="finish-preview style-terrazzo"></span><small>Terrazzo</small></button>
+          <button class="finish-style" data-floor-style="cork" aria-label="Cork floor"><span class="finish-preview style-cork"></span><small>Cork</small></button>
+          <button class="finish-style" data-floor-style="concrete" aria-label="Concrete floor"><span class="finish-preview style-concrete"></span><small>Concrete</small></button>
+        </div>
+        <p>Furniture stays on the floor plan when its shape or size changes.</p>
+      </aside>
+      <aside id="file-panel" class="closed" aria-labelledby="file-title">
+        <div class="room-head">
+          <div>
+            <span class="eyebrow">YOUR DESIGN FILE</span>
+            <h2 id="file-title">Load &amp; Save</h2>
+          </div>
+          <button
+            id="close-files"
+            class="panel-close"
+            aria-label="Close load and save"
+          >
+            ×
+          </button>
+        </div>
+        <p class="file-intro">
+          Keep a portable copy of this room, including its shape, finishes,
+          lighting, and every object.
+        </p>
+        <div class="file-actions">
+          <button id="save-xml">
+            <span aria-hidden="true">↓</span>
+            <strong>Save XML</strong>
+            <small>Download this design</small>
+          </button>
+          <button id="load-xml">
+            <span aria-hidden="true">↑</span>
+            <strong>Load XML</strong>
+            <small>Replace with a saved design</small>
+          </button>
+        </div>
+        <input
+          id="load-xml-file"
+          type="file"
+          accept=".xml,application/xml,text/xml"
+          hidden
+        />
+        <p id="file-status" role="status" aria-live="polite">
+          XML files stay on your device until you choose one.
+        </p>
+      </aside>
+      <section id="selection" class="hidden">
+        <span id="selected-name">Keepsake</span
+        ><button id="rotate-left">↶ Rotate</button
+        ><button id="rotate-right">Rotate ↷</button
+        ><button id="lower" aria-label="Lower selected object">↓ Lower</button
+        ><button id="raise" aria-label="Raise selected object">↑ Raise</button
+        ><button id="smaller">− Smaller</button
+        ><button id="larger">＋ Larger</button><button id="color">Color</button
+        ><button id="duplicate">Duplicate</button
+        ><button id="remove" class="danger">Remove</button>
+      </section>
+      <nav id="dock">
+        <button id="open-catalog" class="primary">＋ Objects</button
+        ><button id="open-room">▱ Room</button
+        ><button id="open-files">⇅ Load &amp; Save</button
+        ><button id="walk-toggle" class="walk-button">◎ Walk</button
+        ><button id="open-photo" class="photo-button">◉ Photo</button
+        ><button id="time-toggle">☀ Afternoon</button
+        ><button id="reset-view">⌂ Home</button>
+      </nav>
+      <section id="walk-hud" aria-hidden="true">
+        <div class="walk-reticle" aria-hidden="true"></div>
+        <div class="walk-help">
+          <strong>WALK MODE</strong>
+          <span>WASD / arrows move · drag to look · wheel zoom · R/F height</span>
+        </div>
+        <div id="walk-pad" aria-label="Walking controls">
+          <button data-walk="forward" aria-label="Walk forward">▲</button>
+          <button data-walk="left" aria-label="Walk left">◀</button>
+          <button data-walk="back" aria-label="Walk backward">▼</button>
+          <button data-walk="right" aria-label="Walk right">▶</button>
+        </div>
+        <div class="walk-zoom" aria-label="Camera position controls">
+          <span>Zoom</span>
+          <button id="walk-zoom-in" aria-label="Zoom in">＋</button>
+          <button id="walk-zoom-out" aria-label="Zoom out">−</button>
+          <span>Height <output id="walk-height-value">2.15 m</output></span>
+          <button id="walk-height-up" aria-label="Raise camera">↑</button>
+          <button id="walk-height-down" aria-label="Lower camera">↓</button>
+        </div>
+      </section>
+      <div id="camera-shutter" aria-hidden="true"><span></span></div>
+      <section
+        id="photo-studio"
+        class="closed"
+        role="dialog"
+        aria-modal="true"
+        aria-hidden="true"
+        aria-labelledby="photo-title"
+      >
+        <div class="photo-sheet simple-photo-sheet">
+          <div class="photo-preview-frame">
+            <div id="photo-loading" class="photo-loading" aria-hidden="true">
+              <span></span>
+              Developing photo…
+            </div>
+            <img id="photo-preview" alt="Your captured room view" />
+          </div>
+          <div class="photo-details">
+            <div class="photo-head">
+              <div>
+                <span class="eyebrow">PHOTO CAPTURED</span>
+                <h2 id="photo-title">Just as you saw it.</h2>
+              </div>
+              <button
+                id="close-photo"
+                class="panel-close"
+                aria-label="Close photo studio"
+              >
+                ×
+              </button>
+            </div>
+            <p class="photo-intro">
+              This is the exact camera view that was on screen when you pressed
+              Photo.
+            </p>
+            <p id="photo-status" role="status" aria-live="polite">
+              Developing the photo…
+            </p>
+            <div class="photo-actions">
+              <button id="retake-photo">↻ Retake</button>
+              <button id="download-photo">↓ Download PNG</button>
+              <button id="share-photo" class="share-photo">
+                ↗ Share photo
+              </button>
+            </div>
+            <small class="photo-note"
+              >On phones, Share opens Instagram, Messages, and other installed
+              apps. Your photo stays on your device until you share it.</small
+            >
+          </div>
+        </div>
+      </section>
       <div id="toast">Saved — this room remembers.</div>
-      <div id="welcome"><div class="postcard"><span class="eyebrow">A TINY PLACE TO BEGIN AGAIN</span><h2>Make yourself at home.</h2><p>Fill this little room with things you love. Move them, turn them, recolor them—or let the afternoon light simply linger.</p><button id="begin">Open the door</button><small>Your room saves itself as you play.</small></div></div>
+      <div id="welcome">
+        <div class="postcard">
+          <span class="eyebrow">A TINY PLACE TO BEGIN AGAIN</span>
+          <h2>Make yourself at home.</h2>
+          <p>
+            Fill this little room with things you love. Move them, turn them,
+            recolor them—or let the afternoon light simply linger.
+          </p>
+          <button id="begin">Open the door</button
+          ><small>Your room saves itself as you play.</small>
+        </div>
+      </div>
     </main>
   </body>
 </html>
