@@ -10,6 +10,7 @@ interface ThreeGameDiagnostics {
     yaw: number;
     pitch: number;
     fov: number;
+    wallOpacity: Record<"back" | "front" | "left" | "right", number>;
   };
   room: {
     width: number;

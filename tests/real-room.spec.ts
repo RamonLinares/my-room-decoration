@@ -13,10 +13,11 @@ test('the My room collection exposes and renders every photo-derived prop', asyn
 
   await page.goto('/');
   await page.locator('#welcome').evaluate((element) => element.classList.add('gone'));
+  await page.locator('#sound').click();
   await page.locator('[data-cat="realroom"]').click();
 
   const items = page.locator('#items .item');
-  await expect(items).toHaveCount(24);
+  await expect(items).toHaveCount(28);
   await items.evaluateAll((buttons) => {
     for (const button of buttons) {
       (button as HTMLButtonElement).click();

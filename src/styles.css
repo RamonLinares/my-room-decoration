@@ -1131,6 +1131,65 @@ button {
   opacity: 0;
   cursor: pointer;
 }
+.finish-label {
+  margin-top: 11px;
+}
+.finish-style-picker {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 7px;
+}
+.finish-style {
+  display: grid;
+  min-width: 0;
+  min-height: 65px;
+  grid-template-rows: 38px auto;
+  gap: 4px;
+  padding: 4px;
+  overflow: hidden;
+  border: 1px solid #c8ad88;
+  border-radius: 10px;
+  background: #fff8e9;
+  color: #6e5146;
+}
+.finish-style small {
+  overflow: hidden;
+  font-size: 0.58rem;
+  font-weight: 750;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.finish-style.active {
+  border-color: #863e35;
+  box-shadow: 0 0 0 2px #a94f42;
+  color: #7d312b;
+}
+.finish-preview {
+  display: block;
+  width: 100%;
+  height: 38px;
+  border-radius: 6px;
+  background-color: #cfb27f;
+  box-shadow: inset 0 0 0 1px #6b493424;
+}
+.style-paint { background: #dfccb0; }
+.style-linen { background: repeating-linear-gradient(90deg, #dbc9aa 0 2px, #eadcc4 2px 6px); }
+.style-pinstripe { background: repeating-linear-gradient(90deg, #dfcdb1 0 9px, #bca17e 9px 11px, #eadcc4 11px 20px); }
+.style-gingham { background-color: #dec9ad; background-image: linear-gradient(90deg, #9f7e6330 50%, transparent 50%), linear-gradient(#9f7e6330 50%, transparent 50%); background-size: 15px 15px; }
+.style-botanical { background-color: #ced4bd; background-image: radial-gradient(ellipse at 35% 35%, #657a5966 0 16%, transparent 18%), radial-gradient(ellipse at 68% 70%, #657a5966 0 14%, transparent 16%); background-size: 25px 28px; }
+.style-scallop { background-color: #d9c5ac; background-image: radial-gradient(circle at 50% 0, transparent 0 10px, #a67f6744 11px 12px, transparent 13px); background-size: 24px 18px; }
+.style-tiny-floral { background-color: #ead9c0; background-image: radial-gradient(circle, #a96b6866 0 2px, transparent 3px); background-size: 16px 16px; }
+.style-soft-brick { background-color: #d8b8a1; background-image: linear-gradient(#fff5 2px, transparent 2px), linear-gradient(90deg, #fff5 2px, transparent 2px); background-size: 28px 15px; }
+.style-planks { background: repeating-linear-gradient(90deg, #aa784d 0 18px, #704b3633 18px 20px); }
+.style-herringbone { background-color: #ae7c50; background-image: linear-gradient(45deg, transparent 45%, #66432f66 46% 52%, transparent 53%), linear-gradient(-45deg, transparent 45%, #66432f66 46% 52%, transparent 53%); background-size: 22px 22px; }
+.style-parquet { background-color: #a9784f; background-image: linear-gradient(90deg, #70472f55 2px, transparent 2px), linear-gradient(#70472f55 2px, transparent 2px); background-size: 20px 20px; }
+.style-checker { background: conic-gradient(#695046 25%, #d5c2a0 0 50%, #695046 0 75%, #d5c2a0 0) 0 0 / 24px 24px; }
+.style-tile { background-color: #c9c5bb; background-image: linear-gradient(#fff8 2px, transparent 2px), linear-gradient(90deg, #fff8 2px, transparent 2px); background-size: 20px 20px; }
+.style-terrazzo { background-color: #d6c7af; background-image: radial-gradient(circle at 20% 30%, #80695b 0 2px, transparent 3px), radial-gradient(circle at 70% 60%, #ae7768 0 3px, transparent 4px), radial-gradient(circle at 45% 85%, #f1e4ca 0 2px, transparent 3px); background-size: 24px 22px; }
+.style-cork { background-color: #ba8e5c; background-image: radial-gradient(circle, #6d4e3544 0 1px, transparent 2px); background-size: 7px 8px; }
+.style-concrete { background-color: #aaa8a1; background-image: radial-gradient(circle, #57595633 0 1px, transparent 2px); background-size: 6px 7px; }
 .shape-presets button:active,
 .room-presets button:active {
   background: #dec8aa;

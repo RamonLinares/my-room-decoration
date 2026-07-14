@@ -11,6 +11,13 @@ export function buildRealRoomProp(root: THREE.Group, kind: string, color: number
   const charcoal = new THREE.MeshStandardMaterial({ color: 0x34383d, roughness: 0.62 });
   const silver = new THREE.MeshStandardMaterial({ color: 0xaab0b4, roughness: 0.3, metalness: 0.72 });
   const wood = new THREE.MeshStandardMaterial({ color: 0xb88149, roughness: 0.66 });
+  const oak = new THREE.MeshPhysicalMaterial({ color: 0x9b612f, roughness: 0.54, clearcoat: 0.16, clearcoatRoughness: 0.7 });
+  const creamFabric = new THREE.MeshStandardMaterial({ color: 0xcac0ad, roughness: 0.98 });
+  const leafGreen = new THREE.MeshStandardMaterial({ color: 0x386a37, roughness: 0.88, side: THREE.DoubleSide });
+  const leafLight = new THREE.MeshStandardMaterial({ color: 0x80a84f, roughness: 0.9, side: THREE.DoubleSide });
+  const cane = new THREE.MeshStandardMaterial({ color: 0x698448, roughness: 0.82 });
+  const liner = new THREE.MeshPhysicalMaterial({ color: 0x9dcfe2, transparent: true, opacity: 0.72, roughness: 0.5, depthWrite: false });
+  const water = new THREE.MeshPhysicalMaterial({ color: 0x8fae6f, transparent: true, opacity: 0.36, roughness: 0.08, transmission: 0.25, depthWrite: false });
   const accent = new THREE.MeshStandardMaterial({ color, roughness: 0.72 });
   const screen = new THREE.MeshStandardMaterial({ color: 0x10151c, roughness: 0.22, metalness: 0.12 });
   const glass = new THREE.MeshPhysicalMaterial({
@@ -80,6 +87,28 @@ export function buildRealRoomProp(root: THREE.Group, kind: string, color: number
   ) => add(new THREE.CylinderGeometry(radius, radius, height, 18), material, x, y, z, rx, ry, rz, name);
   const wheel = (x: number, z: number, y = 0.1) =>
     cylinder(0.1, 0.08, black, x, y, z, Math.PI / 2, 0, 0, "caster");
+  const tube = (
+    points: THREE.Vector3[],
+    radius: number,
+    material: THREE.Material,
+    name: string,
+  ) => add(
+    new THREE.TubeGeometry(
+      new THREE.CatmullRomCurve3(points, false, "centripetal"),
+      Math.max(8, points.length * 7),
+      radius,
+      9,
+      false,
+    ),
+    material,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    name,
+  );
   const monitor = (w: number, h: number, y: number, z = 0) => {
     box(w, h, 0.12, black, 0, y, z, 0, 0, 0, "monitor-frame");
     box(w - 0.12, h - 0.12, 0.025, screen, 0, y, z + 0.073, 0, 0, 0, "monitor-screen");
@@ -144,15 +173,135 @@ export function buildRealRoomProp(root: THREE.Group, kind: string, color: number
       box(0.72, 0.58, 0.08, wood, 0, 0.36, 0, -0.08, 0, 0, "photo-frame");
       box(0.56, 0.42, 0.02, accent, 0, 0.37, 0.052, -0.08, 0, 0, "photo-image");
       break;
-    case "rr-armchair":
-      box(1.5, 0.22, 1.25, warmWhite, 0, 0.88, 0);
-      box(1.48, 1.72, 0.22, warmWhite, 0, 1.72, -0.52, -0.08);
+    case "rr-armchair": {
+      box(1.52, 0.3, 1.28, creamFabric, 0, 0.9, 0.02, -0.025, 0, 0, "chair-seat-cushion");
+      box(1.48, 1.72, 0.27, creamFabric, 0, 1.72, -0.5, -0.11, 0, 0, "chair-back-cushion");
       for (const x of [-0.72, 0.72]) {
-        cylinder(0.06, 1.65, wood, x, 0.82, -0.5, 0, 0, -0.06);
-        cylinder(0.06, 1.5, wood, x, 0.75, 0.48, 0, 0, 0.06);
-        box(0.12, 0.12, 1.05, wood, x, 1.22, 0, 0.05, 0, 0, "wood-arm");
+        tube(
+          [
+            new THREE.Vector3(x, 0.04, -0.58),
+            new THREE.Vector3(x, 1.18, -0.61),
+            new THREE.Vector3(x, 2.55, -0.66),
+          ],
+          0.075,
+          oak,
+          `chair-rear-frame-${x}`,
+        );
+        tube(
+          [
+            new THREE.Vector3(x, 0.04, 0.56),
+            new THREE.Vector3(x, 0.7, 0.52),
+            new THREE.Vector3(x, 1.28, 0.46),
+          ],
+          0.075,
+          oak,
+          `chair-front-leg-${x}`,
+        );
+        tube(
+          [
+            new THREE.Vector3(x, 1.4, -0.57),
+            new THREE.Vector3(x, 1.43, -0.1),
+            new THREE.Vector3(x, 1.37, 0.3),
+            new THREE.Vector3(x, 1.28, 0.46),
+          ],
+          0.075,
+          oak,
+          `chair-arm-${x}`,
+        );
+        tube(
+          [
+            new THREE.Vector3(x, 0.28, -0.54),
+            new THREE.Vector3(x, 0.25, 0.5),
+          ],
+          0.07,
+          oak,
+          `chair-side-rail-${x}`,
+        );
       }
+      tube(
+        [new THREE.Vector3(-0.72, 0.27, 0.51), new THREE.Vector3(0.72, 0.27, 0.51)],
+        0.07,
+        oak,
+        "chair-front-cross-rail",
+      );
       break;
+    }
+    case "rr-radiator": {
+      box(2.8, 0.12, 0.18, charcoal, 0, 0.52, -0.06, 0, 0, 0, "radiator-lower-shadow");
+      box(2.8, 0.12, 0.18, charcoal, 0, 1.88, -0.06, 0, 0, 0, "radiator-upper-shadow");
+      for (let i = 0; i < 9; i += 1) {
+        const x = -1.28 + i * 0.32;
+        box(0.26, 1.55, 0.25, white, x, 1.2, 0.02, 0, 0, 0, `radiator-fin-${i}`);
+        box(0.18, 0.08, 0.28, charcoal, x, 2, 0.02, 0, 0, 0, `radiator-top-vent-${i}`);
+      }
+      box(0.24, 0.16, 0.22, silver, -1.52, 0.62, -0.02, 0, 0, 0, "radiator-valve");
+      cylinder(0.055, 0.52, silver, 1.48, 0.3, -0.03, 0, 0, 0, "radiator-pipe");
+      break;
+    }
+    case "rr-lucky-bamboo": {
+      add(new THREE.CylinderGeometry(0.3, 0.34, 1.3, 28, 1, true), glass, 0, 0.65, 0, 0, 0, 0, "bamboo-glass-vase");
+      cylinder(0.29, 0.04, glass, 0, 0.02, 0, 0, 0, 0, "bamboo-vase-base");
+      cylinder(0.285, 0.58, water, 0, 0.31, 0, 0, 0, 0, "bamboo-water");
+      cylinder(0.07, 1.95, cane, 0, 1.55, 0, 0, 0, 0, "bamboo-cane");
+      for (let y = 0.75; y <= 2.45; y += 0.18)
+        add(new THREE.TorusGeometry(0.073, 0.012, 6, 18), warmWhite, 0, y, 0, Math.PI / 2, 0, 0, "bamboo-cane-ring");
+      const leafShape = new THREE.Shape();
+      leafShape.moveTo(0, 0);
+      leafShape.quadraticCurveTo(0.26, 0.16, 0.76, 0);
+      leafShape.quadraticCurveTo(0.26, -0.16, 0, 0);
+      const leafGeometry = new THREE.ShapeGeometry(leafShape, 6),
+        leafAxis = new THREE.Vector3(1, 0, 0);
+      for (let i = 0; i < 28; i += 1) {
+        const angle = i * 2.399,
+          tier = i % 7,
+          radius = 0.1 + tier * 0.018,
+          direction = new THREE.Vector3(
+            Math.cos(angle),
+            0.5 - (i % 6) * 0.14,
+            Math.sin(angle),
+          ).normalize(),
+          leaf = add(
+            leafGeometry.clone(),
+            i % 3 === 0 ? leafLight : leafGreen,
+            Math.cos(angle) * radius,
+            2.33 + (i % 5) * 0.13,
+            Math.sin(angle) * radius,
+            0,
+            0,
+            0,
+            `bamboo-leaf-${i}`,
+          );
+        leaf.quaternion.setFromUnitVectors(leafAxis, direction);
+        leaf.scale.setScalar(0.86 + (i % 4) * 0.08);
+      }
+      leafGeometry.dispose();
+      break;
+    }
+    case "rr-built-in-wardrobe": {
+      box(3.9, 6.12, 0.58, warmWhite, 0, 3.06, 0, 0, 0, 0, "wardrobe-shell");
+      box(4.08, 0.16, 0.68, white, 0, 6.05, 0.01, 0, 0, 0, "wardrobe-crown");
+      box(4.08, 0.16, 0.7, white, 0, 0.08, 0.02, 0, 0, 0, "wardrobe-plinth");
+      for (let column = 0; column < 3; column += 1) {
+        const x = -1.28 + column * 1.28;
+        box(1.18, 3.85, 0.08, white, x, 2.13, 0.34, 0, 0, 0, `wardrobe-lower-door-${column}`);
+        box(1.18, 1.62, 0.08, white, x, 5.08, 0.34, 0, 0, 0, `wardrobe-upper-door-${column}`);
+        cylinder(0.075, 0.055, black, x + 0.39, 1.55, 0.405, Math.PI / 2, 0, 0, `wardrobe-lower-knob-${column}`);
+        cylinder(0.075, 0.055, black, x + 0.39, 4.98, 0.405, Math.PI / 2, 0, 0, `wardrobe-upper-knob-${column}`);
+      }
+      for (const x of [-1.92, -0.64, 0.64, 1.92]) box(0.045, 5.87, 0.045, warmWhite, x, 3.03, 0.4, 0, 0, 0, "wardrobe-door-reveal");
+      box(1.18, 0.38, 0.08, white, -1.28, 0.31, 0.35, 0, 0, 0, "wardrobe-bottom-drawer");
+      cylinder(0.075, 0.055, black, -1.28, 0.32, 0.41, Math.PI / 2, 0, 0, "wardrobe-drawer-knob");
+      break;
+    }
+    case "rr-interior-door": {
+      box(1.72, 5.62, 0.2, white, 0, 2.81, 0, 0, 0, 0, "interior-door-frame");
+      box(1.43, 5.28, 0.12, warmWhite, 0, 2.7, 0.12, 0, 0, 0, "interior-door-leaf");
+      for (const y of [1.62, 2.72, 3.82]) box(1.31, 0.025, 0.025, white, 0, y, 0.195, 0, 0, 0, "interior-door-panel-line");
+      cylinder(0.1, 0.055, black, 0.45, 2.55, 0.22, Math.PI / 2, 0, 0, "interior-door-handle-rose");
+      cylinder(0.055, 0.42, black, 0.62, 2.55, 0.25, 0, 0, Math.PI / 2, "interior-door-lever");
+      for (const y of [0.82, 2.72, 4.62]) box(0.06, 0.3, 0.08, black, 0.75, y, 0.18, 0, 0, 0, "interior-door-hinge");
+      break;
+    }
     case "rr-standing-desk":
       box(4.25, 0.16, 1.75, wood, 0, 1.9, 0, 0, 0, 0, "bamboo-top");
       for (const x of [-1.62, 1.62]) {
@@ -243,8 +392,10 @@ export function buildRealRoomProp(root: THREE.Group, kind: string, color: number
       for (const x of [-0.46, 0.46]) for (const z of [-0.4, 0.4]) wheel(x, z, 0.08);
       break;
     case "rr-waste-bin":
-      add(new THREE.CylinderGeometry(0.36, 0.29, 0.78, 20, 1, true), warmWhite, 0, 0.39, 0, 0, 0, 0, "waste-bin");
-      add(new THREE.TorusGeometry(0.36, 0.025, 8, 24), silver, 0, 0.78, 0, Math.PI / 2);
+      add(new THREE.CylinderGeometry(0.36, 0.29, 0.82, 24, 1, true), black, 0, 0.41, 0, 0, 0, 0, "waste-bin-shell");
+      cylinder(0.285, 0.03, charcoal, 0, 0.08, 0, 0, 0, 0, "waste-bin-bottom");
+      add(new THREE.CylinderGeometry(0.33, 0.285, 0.7, 24, 1, true), liner, 0, 0.47, 0, 0, 0, 0, "waste-bin-liner");
+      add(new THREE.TorusGeometry(0.37, 0.04, 8, 28), liner, 0, 0.83, 0, Math.PI / 2, 0, 0, "waste-bin-liner-rim");
       break;
     case "rr-wall-ac":
       box(2.45, 0.62, 0.5, white, 0, 0, 0, 0, 0, 0, "ac-shell");
@@ -263,6 +414,8 @@ export function buildRealRoomProp(root: THREE.Group, kind: string, color: number
     nodes: Object.fromEntries(root.children.map((child) => [child.name, child])),
     collider: "bounding-box",
     source: "Ramon's real room photos",
+    sourcePhotos: ["Photo 1", "Photo 2", "Photo 3"],
+    actionReadiness: "whole-object transform",
   };
   return true;
 }

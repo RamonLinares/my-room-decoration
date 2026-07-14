@@ -11,6 +11,14 @@ import {
 import { buildExpandedProp } from "../assets/modelFactories/ExpandedPropFactory";
 import { buildRealRoomProp } from "../assets/modelFactories/RealRoomPropFactory";
 import {
+  createFloorFinishTexture,
+  createWallFinishTexture,
+  FLOOR_FINISH_STYLES,
+  FloorFinishStyle,
+  WALL_FINISH_STYLES,
+  WallFinishStyle,
+} from "../assets/materials/RoomFinishTextures";
+import {
   REAL_ROOM_CATALOG,
   REAL_ROOM_FLOOR_ONLY_KINDS,
   REAL_ROOM_SUPPORT_HEIGHTS,
@@ -57,6 +65,7 @@ type CatalogItem = {
 };
 type RoomShape = "rectangle" | "l" | "t" | "u";
 type RoomRect = { minX: number; maxX: number; minZ: number; maxZ: number };
+type RoomWallSide = "back" | "front" | "left" | "right";
 type ImportedDesign = {
   name: string;
   width: number;
@@ -66,6 +75,8 @@ type ImportedDesign = {
   crossbarDepth: number;
   wallColor: number;
   floorColor: number;
+  wallStyle: WallFinishStyle;
+  floorStyle: FloorFinishStyle;
   evening: boolean;
   muted: boolean;
   items: ItemData[];
@@ -578,6 +589,13 @@ export class Game {
   private lampLight?: THREE.PointLight;
   private dust?: THREE.Points;
   private roomGroup?: THREE.Group;
+  private roomWalls: Array<{
+    side: RoomWallSide;
+    outwardNormal: THREE.Vector3;
+    materials: THREE.Material[];
+    opacity: number;
+  }> = [];
+  private readonly wallViewDirection = new THREE.Vector3();
   private architecturalExtensions = new Map<string, THREE.Group>();
   private doorFollowers: string[] = [];
   private roomWidth = 14;
@@ -587,9 +605,8 @@ export class Game {
   private roomCrossbarDepth = 0.55;
   private roomWallColor = 0xe8d7b8;
   private roomFloorColor = 0x8d6548;
-  private roomWallMaterial?: THREE.MeshStandardMaterial;
-  private roomFloorMaterial?: THREE.MeshStandardMaterial;
-  private roomFloorSeamMaterial?: THREE.MeshBasicMaterial;
+  private roomWallStyle: WallFinishStyle = "paint";
+  private roomFloorStyle: FloorFinishStyle = "planks";
   private roomName = "A room of your own";
   private muted = false;
   private saveTimer = 0;
@@ -884,46 +901,92 @@ export class Game {
   private rebuildRoom() {
     if (this.roomGroup) {
       this.scene.remove(this.roomGroup);
+      const geometries = new Set<THREE.BufferGeometry>();
+      const materials = new Set<THREE.Material>();
       this.roomGroup.traverse((o) => {
         if (o instanceof THREE.Mesh) {
-          o.geometry.dispose();
-          const materials = Array.isArray(o.material)
+          geometries.add(o.geometry);
+          const meshMaterials = Array.isArray(o.material)
             ? o.material
             : [o.material];
-          materials.forEach((m) => m.dispose());
+          meshMaterials.forEach((material) => materials.add(material));
         }
       });
+      geometries.forEach((geometry) => geometry.dispose());
+      materials.forEach((material) => {
+        if (material instanceof THREE.MeshStandardMaterial)
+          material.map?.dispose();
+        material.dispose();
+      });
     }
+    this.roomWalls = [];
     const room = new THREE.Group();
     this.roomGroup = room;
     const w = this.roomWidth,
       d = this.roomDepth,
       minX = -w / 2,
-      maxX = w / 2,
-      minZ = -d / 2,
-      maxZ = d / 2,
-      cutZ = minZ + d * this.shapeRatios().depth;
-    const floorMat = new THREE.MeshStandardMaterial({
-        color: this.roomFloorColor,
-        roughness: 0.72,
+      minZ = -d / 2;
+    const floorMap = createFloorFinishTexture(
+        this.roomFloorStyle,
+        this.roomFloorColor,
+      ),
+      wallMap = createWallFinishTexture(
+        this.roomWallStyle,
+        this.roomWallColor,
+      ),
+      floorMat = new THREE.MeshStandardMaterial({
+        color: floorMap ? 0xffffff : this.roomFloorColor,
+        ...(floorMap ? { map: floorMap } : {}),
+        roughness:
+          this.roomFloorStyle === "tile"
+            ? 0.48
+            : this.roomFloorStyle === "concrete"
+              ? 0.94
+              : 0.72,
       }),
       seamMat = new THREE.MeshBasicMaterial({
         color: new THREE.Color(this.roomFloorColor).offsetHSL(0, 0, -0.18),
         transparent: true,
-        opacity: 0.32,
+        opacity: this.roomFloorStyle === "planks" ? 0.2 : 0,
       }),
-      wallMat = new THREE.MeshStandardMaterial({
-        color: this.roomWallColor,
-        roughness: 0.92,
-      }),
-      baseMat = new THREE.MeshStandardMaterial({
-        color: 0xf2e5cf,
-        roughness: 0.7,
+      createWallMat = () =>
+        new THREE.MeshStandardMaterial({
+          color: wallMap ? 0xffffff : this.roomWallColor,
+          ...(wallMap ? { map: wallMap } : {}),
+          roughness: 0.92,
+          transparent: true,
+        }),
+      createBaseMat = () =>
+        new THREE.MeshStandardMaterial({
+          color: 0xf2e5cf,
+          roughness: 0.7,
+          transparent: true,
+        });
+    const createWallSide = (
+      side: RoomWallSide,
+      outwardNormal: THREE.Vector3,
+    ) => {
+      const wallMaterial = createWallMat(),
+        baseMaterial = createBaseMat(),
+        group = new THREE.Group();
+      group.name = `${side}-room-wall`;
+      room.add(group);
+      this.roomWalls.push({
+        side,
+        outwardNormal,
+        materials: [wallMaterial, baseMaterial],
+        opacity: 1,
       });
-    this.roomFloorMaterial = floorMat;
-    this.roomFloorSeamMaterial = seamMat;
-    this.roomWallMaterial = wallMat;
-    for (const rect of this.roomRects()) {
+      return { group, wallMaterial, baseMaterial };
+    };
+    const walls = {
+        back: createWallSide("back", new THREE.Vector3(0, 0, -1)),
+        front: createWallSide("front", new THREE.Vector3(0, 0, 1)),
+        left: createWallSide("left", new THREE.Vector3(-1, 0, 0)),
+        right: createWallSide("right", new THREE.Vector3(1, 0, 0)),
+      },
+      roomRects = this.roomRects();
+    for (const rect of roomRects) {
       const rw = rect.maxX - rect.minX,
         rd = rect.maxZ - rect.minZ,
         cx = (rect.minX + rect.maxX) / 2,
@@ -944,29 +1007,49 @@ export class Game {
         room.add(seam);
       }
     }
-    const horizontalWall = (z: number, a: number, b: number) => {
+    const horizontalWall = (
+      side: "back" | "front",
+      z: number,
+      a: number,
+      b: number,
+    ) => {
+      const wallSide = walls[side],
+        inward = side === "back" ? 1 : -1;
       const length = b - a,
-        wall = new THREE.Mesh(new THREE.BoxGeometry(length, 7, 0.18), wallMat),
+        wall = new THREE.Mesh(
+          new THREE.BoxGeometry(length, 7, 0.18),
+          wallSide.wallMaterial,
+        ),
         base = new THREE.Mesh(
           new THREE.BoxGeometry(length, 0.32, 0.22),
-          baseMat,
+          wallSide.baseMaterial,
         );
-      wall.position.set((a + b) / 2, 3.5, z + 0.05);
+      wall.position.set((a + b) / 2, 3.5, z + inward * 0.05);
       wall.receiveShadow = true;
-      base.position.set((a + b) / 2, 0.18, z + 0.2);
-      room.add(wall, base);
+      base.position.set((a + b) / 2, 0.18, z + inward * 0.2);
+      wallSide.group.add(wall, base);
     };
-    const verticalWall = (x: number, a: number, b: number) => {
+    const verticalWall = (
+      side: "left" | "right",
+      x: number,
+      a: number,
+      b: number,
+    ) => {
+      const wallSide = walls[side],
+        inward = side === "left" ? 1 : -1;
       const length = b - a,
-        wall = new THREE.Mesh(new THREE.BoxGeometry(0.18, 7, length), wallMat),
+        wall = new THREE.Mesh(
+          new THREE.BoxGeometry(0.18, 7, length),
+          wallSide.wallMaterial,
+        ),
         base = new THREE.Mesh(
           new THREE.BoxGeometry(0.22, 0.32, length),
-          baseMat,
+          wallSide.baseMaterial,
         );
-      wall.position.set(x + 0.1, 3.5, (a + b) / 2);
+      wall.position.set(x + inward * 0.1, 3.5, (a + b) / 2);
       wall.receiveShadow = true;
-      base.position.set(x + 0.25, 0.18, (a + b) / 2);
-      room.add(wall, base);
+      base.position.set(x + inward * 0.25, 0.18, (a + b) / 2);
+      wallSide.group.add(wall, base);
     };
     const wallSegments = (
       start: number,
@@ -995,7 +1078,6 @@ export class Game {
               door.x + 1.46 * (door.scale ?? 1),
             ] as [number, number],
         ),
-      leftEnd = this.roomShape === "t" ? cutZ : maxZ,
       leftCuts = doors
         .filter((door) => this.doorWall(door) === "left")
         .map(
@@ -1005,8 +1087,58 @@ export class Game {
               door.z + 1.46 * (door.scale ?? 1),
             ] as [number, number],
         );
-    wallSegments(minX, maxX, backCuts, (a, b) => horizontalWall(minZ, a, b));
-    wallSegments(minZ, leftEnd, leftCuts, (a, b) => verticalWall(minX, a, b));
+    const sameEdge = (a: number, b: number) => Math.abs(a - b) < 0.001;
+    for (const rect of roomRects) {
+      const backNeighbors = roomRects
+          .filter(
+            (other) =>
+              other !== rect && sameEdge(other.maxZ, rect.minZ),
+          )
+          .map((other) => [other.minX, other.maxX] as [number, number]),
+        frontNeighbors = roomRects
+          .filter(
+            (other) =>
+              other !== rect && sameEdge(other.minZ, rect.maxZ),
+          )
+          .map((other) => [other.minX, other.maxX] as [number, number]),
+        leftNeighbors = roomRects
+          .filter(
+            (other) =>
+              other !== rect && sameEdge(other.maxX, rect.minX),
+          )
+          .map((other) => [other.minZ, other.maxZ] as [number, number]),
+        rightNeighbors = roomRects
+          .filter(
+            (other) =>
+              other !== rect && sameEdge(other.minX, rect.maxX),
+          )
+          .map((other) => [other.minZ, other.maxZ] as [number, number]);
+
+      wallSegments(
+        rect.minX,
+        rect.maxX,
+        [
+          ...backNeighbors,
+          ...(sameEdge(rect.minZ, minZ) ? backCuts : []),
+        ],
+        (a, b) => horizontalWall("back", rect.minZ, a, b),
+      );
+      wallSegments(rect.minX, rect.maxX, frontNeighbors, (a, b) =>
+        horizontalWall("front", rect.maxZ, a, b),
+      );
+      wallSegments(
+        rect.minZ,
+        rect.maxZ,
+        [
+          ...leftNeighbors,
+          ...(sameEdge(rect.minX, minX) ? leftCuts : []),
+        ],
+        (a, b) => verticalWall("left", rect.minX, a, b),
+      );
+      wallSegments(rect.minZ, rect.maxZ, rightNeighbors, (a, b) =>
+        verticalWall("right", rect.maxX, a, b),
+      );
+    }
     for (const door of doors) {
       const scale = door.scale ?? 1,
         openingHeight = Math.min(6.82, 4.38 * scale),
@@ -1016,11 +1148,11 @@ export class Game {
           this.doorWall(door) === "back"
             ? new THREE.Mesh(
                 new THREE.BoxGeometry(openingWidth, lintelHeight, 0.18),
-                wallMat,
+                walls.back.wallMaterial,
               )
             : new THREE.Mesh(
                 new THREE.BoxGeometry(0.18, lintelHeight, openingWidth),
-                wallMat,
+                walls.left.wallMaterial,
               );
       lintel.position.set(
         this.doorWall(door) === "back" ? door.x : minX + 0.1,
@@ -1028,10 +1160,35 @@ export class Game {
         this.doorWall(door) === "back" ? minZ + 0.05 : door.z,
       );
       lintel.receiveShadow = true;
-      room.add(lintel);
+      (this.doorWall(door) === "back" ? walls.back.group : walls.left.group).add(
+        lintel,
+      );
     }
     this.scene.add(room);
     this.rebuildArchitecturalExtensions();
+  }
+
+  private updateRoomWallTransparency() {
+    this.wallViewDirection.copy(this.camera.position).sub(this.controls.target);
+    this.wallViewDirection.y = 0;
+    if (this.wallViewDirection.lengthSq() > 0.0001)
+      this.wallViewDirection.normalize();
+
+    for (const wall of this.roomWalls) {
+      const cameraOnOutside = this.firstPerson
+        ? 0
+        : THREE.MathUtils.smoothstep(
+            wall.outwardNormal.dot(this.wallViewDirection),
+            0.08,
+            0.32,
+          );
+      const opacity = THREE.MathUtils.lerp(1, 0.06, cameraOnOutside);
+      wall.opacity = opacity;
+      for (const material of wall.materials) {
+        material.opacity = opacity;
+        material.depthWrite = opacity > 0.98;
+      }
+    }
   }
   private addDust() {
     const geo = new THREE.BufferGeometry();
@@ -1203,6 +1360,20 @@ export class Game {
           (button.onclick = () =>
             this.setRoomFinish("floor", button.dataset.floorColor!)),
       );
+    document
+      .querySelectorAll<HTMLButtonElement>("[data-wall-style]")
+      .forEach(
+        (button) =>
+          (button.onclick = () =>
+            this.setRoomStyle("wall", button.dataset.wallStyle!)),
+      );
+    document
+      .querySelectorAll<HTMLButtonElement>("[data-floor-style]")
+      .forEach(
+        (button) =>
+          (button.onclick = () =>
+            this.setRoomStyle("floor", button.dataset.floorStyle!)),
+      );
     $("#wall-color-custom").addEventListener("input", (event) =>
       this.setRoomFinish("wall", (event.target as HTMLInputElement).value),
     );
@@ -1293,6 +1464,8 @@ export class Game {
         crossbarDepth?: number;
         wallColor?: number;
         floorColor?: number;
+        wallStyle?: WallFinishStyle;
+        floorStyle?: FloorFinishStyle;
         muted?: boolean;
         evening?: boolean;
         name?: string;
@@ -1322,6 +1495,10 @@ export class Game {
             0,
             0xffffff,
           );
+        if (WALL_FINISH_STYLES.includes(saved.wallStyle ?? "paint"))
+          this.roomWallStyle = saved.wallStyle ?? "paint";
+        if (FLOOR_FINISH_STYLES.includes(saved.floorStyle ?? "planks"))
+          this.roomFloorStyle = saved.floorStyle ?? "planks";
         this.muted = saved.muted ?? false;
         this.evening = saved.evening ?? false;
         this.roomName = this.cleanRoomName(saved.name ?? this.roomName);
@@ -1351,6 +1528,20 @@ export class Game {
       .querySelectorAll<HTMLButtonElement>("[data-wall-color]")
       .forEach((button) => {
         const active = button.dataset.wallColor === wallHex;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+    document
+      .querySelectorAll<HTMLButtonElement>("[data-wall-style]")
+      .forEach((button) => {
+        const active = button.dataset.wallStyle === this.roomWallStyle;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+    document
+      .querySelectorAll<HTMLButtonElement>("[data-floor-style]")
+      .forEach((button) => {
+        const active = button.dataset.floorStyle === this.roomFloorStyle;
         button.classList.toggle("active", active);
         button.setAttribute("aria-pressed", String(active));
       });
@@ -1408,6 +1599,8 @@ export class Game {
         crossbarDepth: this.roomCrossbarDepth,
         wallColor: this.roomWallColor,
         floorColor: this.roomFloorColor,
+        wallStyle: this.roomWallStyle,
+        floorStyle: this.roomFloorStyle,
         muted: this.muted,
         evening: this.evening,
         name: this.roomName,
@@ -1447,6 +1640,8 @@ export class Game {
       "floor-color",
       `#${new THREE.Color(this.roomFloorColor).getHexString()}`,
     );
+    room.setAttribute("wall-style", this.roomWallStyle);
+    room.setAttribute("floor-style", this.roomFloorStyle);
     preferences.setAttribute("time", this.evening ? "evening" : "afternoon");
     preferences.setAttribute("muted", String(this.muted));
     items.setAttribute("count", String(this.data.length));
@@ -1517,9 +1712,15 @@ export class Game {
           throw new Error(`Invalid ${attribute} in the design file.`);
         return Number.parseInt(value.slice(1), 16);
       },
+      wallStyle = room.getAttribute("wall-style") ?? "paint",
+      floorStyle = room.getAttribute("floor-style") ?? "planks",
       shape = room.getAttribute("shape") as RoomShape;
     if (!["rectangle", "l", "t", "u"].includes(shape))
       throw new Error("The design has an unknown room shape.");
+    if (!WALL_FINISH_STYLES.includes(wallStyle as WallFinishStyle))
+      throw new Error("The design has an unknown wallpaper pattern.");
+    if (!FLOOR_FINISH_STYLES.includes(floorStyle as FloorFinishStyle))
+      throw new Error("The design has an unknown floor material.");
     const ids = new Set<string>(),
       importedItems = itemElements.map((element) => {
         const id = element.getAttribute("id") ?? "",
@@ -1560,6 +1761,8 @@ export class Game {
       crossbarDepth: number(room, "crossbar-depth", 0, 1),
       wallColor: color(room, "wall-color"),
       floorColor: color(room, "floor-color"),
+      wallStyle: wallStyle as WallFinishStyle,
+      floorStyle: floorStyle as FloorFinishStyle,
       evening: preferences?.getAttribute("time") === "evening",
       muted: preferences?.getAttribute("muted") === "true",
       items: importedItems,
@@ -1577,6 +1780,8 @@ export class Game {
       this.roomCrossbarDepth = design.crossbarDepth;
       this.roomWallColor = design.wallColor;
       this.roomFloorColor = design.floorColor;
+      this.roomWallStyle = design.wallStyle;
+      this.roomFloorStyle = design.floorStyle;
       this.muted = design.muted;
       this.evening = design.evening;
       this.rebuildRoom();
@@ -1633,16 +1838,27 @@ export class Game {
     if (!Number.isFinite(color)) return;
     if (surface === "wall") {
       this.roomWallColor = color;
-      this.roomWallMaterial?.color.setHex(color);
     } else {
       this.roomFloorColor = color;
-      this.roomFloorMaterial?.color.setHex(color);
-      this.roomFloorSeamMaterial?.color.setHex(color).offsetHSL(0, 0, -0.18);
     }
-    this.rebuildArchitecturalExtensions();
+    this.rebuildRoom();
     this.syncRoomControls();
     this.saveRoomSettings();
     this.changed();
+  }
+  private setRoomStyle(surface: "wall" | "floor", value: string) {
+    if (surface === "wall") {
+      if (!WALL_FINISH_STYLES.includes(value as WallFinishStyle)) return;
+      this.roomWallStyle = value as WallFinishStyle;
+    } else {
+      if (!FLOOR_FINISH_STYLES.includes(value as FloorFinishStyle)) return;
+      this.roomFloorStyle = value as FloorFinishStyle;
+    }
+    this.rebuildRoom();
+    this.syncRoomControls();
+    this.saveRoomSettings();
+    this.changed();
+    this.audio("place");
   }
   private setRoomSize(width: number, depth: number) {
     this.roomWidth = THREE.MathUtils.clamp(width, 10, 20);
@@ -4413,6 +4629,7 @@ export class Game {
     );
     if (this.firstPerson) this.updateFirstPerson(d);
     else this.controls.update();
+    this.updateRoomWallTransparency();
     if (this.dust) {
       this.dust.rotation.y = e * 0.015;
       this.dust.position.y = Math.sin(e * 0.2) * 0.04;
@@ -4457,6 +4674,9 @@ export class Game {
         yaw: this.firstPersonYaw,
         pitch: this.firstPersonPitch,
         fov: this.camera.fov,
+        wallOpacity: Object.fromEntries(
+          this.roomWalls.map((wall) => [wall.side, wall.opacity]),
+        ) as Record<RoomWallSide, number>,
       },
       room: {
         width: this.roomWidth,

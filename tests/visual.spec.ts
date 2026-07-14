@@ -92,3 +92,42 @@ test('renders a nonblank interactive game canvas', async ({ page }, testInfo) =>
   expect(consoleErrors).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
+
+test('fades only the room walls nearest the orbit camera', async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.name.includes('desktop'), 'Orbit regression uses desktop pointer controls');
+
+  await page.goto('/');
+  await page.locator('#welcome').evaluate((element) => element.classList.add('gone'));
+  await page.waitForFunction(() => (window.__THREE_GAME_DIAGNOSTICS__?.frame ?? 0) > 10);
+
+  const initial = await page.evaluate(
+    () => window.__THREE_GAME_DIAGNOSTICS__?.camera.wallOpacity,
+  );
+  expect(initial?.back).toBeGreaterThan(0.95);
+  expect(initial?.left).toBeGreaterThan(0.95);
+  expect(initial?.front).toBeLessThan(0.2);
+  expect(initial?.right).toBeLessThan(0.2);
+  expect(Object.keys(initial ?? {})).toHaveLength(4);
+
+  const canvas = page.locator('#game-canvas');
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) return;
+
+  for (let turn = 0; turn < 2; turn += 1) {
+    const x = box.x + box.width * 0.52;
+    const y = box.y + box.height * 0.18;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 100, y, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(350);
+  }
+
+  const rotated = await page.evaluate(
+    () => window.__THREE_GAME_DIAGNOSTICS__?.camera.wallOpacity,
+  );
+  const opacities = Object.values(rotated ?? {});
+  expect(Math.min(...opacities)).toBeLessThan(0.2);
+  expect(Math.max(...opacities)).toBeGreaterThan(0.8);
+});
