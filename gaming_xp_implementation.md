@@ -93,7 +93,7 @@ ELEVENLABS_API_KEY=SET
 
 - Playwright: **154 passed, 6 intentional platform skips, 0 failed** across desktop Chrome and mobile Safari emulation.
 - Stress gates: 100/200/500-object fixtures, 20 consecutive iOS-class photo captures, four room-shape cutaway rotation, accessibility with axe, responsive/200% text/forced colors/reduced motion, persistence/share round trips, and nonblank canvas pixel sampling.
-- Build: HTML 40.01 kB; CSS 55.04 kB; game chunk 687.03 kB (185.47 kB gzip); lazy GLTF loader 44.29 kB; Three.js core 242.04 kB.
+- Build: HTML 40.01 kB; CSS 55.23 kB; game chunk 687.03 kB (185.47 kB gzip); lazy GLTF loader 44.29 kB; Three.js core 242.04 kB.
 - Runtime sample: quality `high`; frame work p50 0.70 ms, p95 1.10 ms, p99 1.60 ms; 20 collision cells; wall opacity back/left 1 and front/right 0.
 - `npm run build`, `npm run lint:css`, and `git diff --check` pass.
 

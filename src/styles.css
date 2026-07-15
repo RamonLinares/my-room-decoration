@@ -2278,7 +2278,8 @@ button {
     position: absolute;
     right: 0;
     bottom: calc(100% + 10px);
-    width: min(350px, calc(100vw - 18px));
+    width: min(350px, calc(100vw - max(18px, env(safe-area-inset-left) + env(safe-area-inset-right))));
+    max-width: calc(100vw - max(18px, env(safe-area-inset-left) + env(safe-area-inset-right)));
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8px;
@@ -2306,12 +2307,14 @@ button {
   }
 
   #secondary-actions > button:not(.panel-close) {
+    min-width: 48px;
     min-height: 52px;
     border: 1px solid #c8ad88;
     border-radius: 12px;
     background: #fff8e9;
     font-size: 0.78rem;
     font-weight: 800;
+    overflow-wrap: anywhere;
   }
 
   #selection {

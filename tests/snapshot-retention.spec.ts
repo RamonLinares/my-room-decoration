@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test';
 
 test('default snapshots retain at least 20 or seven days while enforcing a hard bound', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => Boolean(window.__MY_ROOM_BROWSER_TEST_MODULES__));
   const result = await page.evaluate(async () => {
-    const moduleUrl = new URL('/src/persistence/index.ts', location.origin).href;
-    const { MyRoomPersistence } = await import(/* @vite-ignore */ moduleUrl) as typeof import('../src/persistence');
+    const { MyRoomPersistence } = window.__MY_ROOM_BROWSER_TEST_MODULES__!;
     const day = 24 * 60 * 60 * 1_000;
     let clock = 1_000;
     const store = new MyRoomPersistence({

@@ -39,7 +39,7 @@ test('walk mode moves, looks, zooms, and captures the live view', async ({
       pointerType: 'touch',
       isPrimary: true,
     });
-    await page.waitForTimeout(650);
+    await page.evaluate(() => window.advanceTime?.(1_000));
     await forward.dispatchEvent('pointerup', {
       pointerId: 21,
       pointerType: 'touch',
