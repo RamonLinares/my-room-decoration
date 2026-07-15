@@ -7,7 +7,12 @@ export async function enterRoom(page: Page) {
   // The postcard deliberately fades with opacity before it is removed from layout.
   // Playwright's visibility model ignores opacity, so assert the immediate,
   // user-relevant closed state rather than racing the decorative hide timer.
-  await expect(page.locator('#welcome')).toHaveAttribute('aria-hidden', 'true');
+  // Software-rendered WebGL on CI can take longer than the default assertion
+  // timeout to initialize. Wait for the editor's own ready transition rather
+  // than treating startup duration as part of every functional assertion.
+  await expect(page.locator('#welcome')).toHaveAttribute('aria-hidden', 'true', {
+    timeout: 30_000,
+  });
   await expect(page.locator('#welcome')).toHaveClass(/gone/);
   await expect(page.locator('#open-catalog')).toBeFocused();
 }
