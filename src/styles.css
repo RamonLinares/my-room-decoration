@@ -2276,10 +2276,10 @@ button {
 
   #secondary-actions {
     position: absolute;
-    right: 0;
+    right: max(4px, env(safe-area-inset-right));
     bottom: calc(100% + 10px);
-    width: min(350px, calc(100vw - max(18px, env(safe-area-inset-left) + env(safe-area-inset-right))));
-    max-width: calc(100vw - max(18px, env(safe-area-inset-left) + env(safe-area-inset-right)));
+    width: min(350px, calc(100vw - max(24px, env(safe-area-inset-left) + env(safe-area-inset-right))));
+    max-width: calc(100vw - max(24px, env(safe-area-inset-left) + env(safe-area-inset-right)));
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8px;

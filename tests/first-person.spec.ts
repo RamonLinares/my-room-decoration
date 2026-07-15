@@ -20,6 +20,11 @@ test('walk mode moves, looks, zooms, and captures the live view', async ({
   await expect
     .poll(() => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__?.state))
     .toBe('walking');
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__!.player.position.y),
+    )
+    .toBeLessThanOrEqual(1.75);
 
   const start = await page.evaluate(
     () => window.__THREE_GAME_DIAGNOSTICS__!.player.position,

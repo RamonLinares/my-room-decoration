@@ -92,8 +92,9 @@ ELEVENLABS_API_KEY=SET
 ## Final local QA evidence
 
 - Playwright: **154 passed, 6 intentional platform skips, 0 failed** across desktop Chrome and mobile Safari emulation.
+- GitHub parity: the same 160-test matrix passes with `GITHUB_ACTIONS=true` and a newer Node runtime; Vite applies the repository base path only during production builds, leaving secondary HTML test entries rooted correctly during CI development-server runs.
 - Stress gates: 100/200/500-object fixtures, 20 consecutive iOS-class photo captures, four room-shape cutaway rotation, accessibility with axe, responsive/200% text/forced colors/reduced motion, persistence/share round trips, and nonblank canvas pixel sampling.
-- Build: HTML 40.01 kB; CSS 55.23 kB; game chunk 687.03 kB (185.47 kB gzip); lazy GLTF loader 44.29 kB; Three.js core 242.04 kB.
+- Build: HTML 40.04 kB; CSS 55.34 kB; game chunk 687.09 kB (185.49 kB gzip); lazy GLTF loader 44.29 kB; Three.js core 242.04 kB.
 - Runtime sample: quality `high`; frame work p50 0.70 ms, p95 1.10 ms, p99 1.60 ms; 20 collision cells; wall opacity back/left 1 and front/right 0.
 - `npm run build`, `npm run lint:css`, and `git diff --check` pass.
 

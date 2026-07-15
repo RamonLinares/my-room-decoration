@@ -68,7 +68,7 @@ Identity preserved: calm, private, local-first creative sandbox; optional goals;
 - Final local default-room sample: quality `high`; p50 0.70 ms, p95 1.10 ms, p99 1.60 ms; 20 collision cells; 10 objects.
 - Adaptive quality bounds DPR, shadows, shadow-map size, and particles. The loop pauses on hidden documents and pagehide disposes WebGL, audio, observers, object URLs, persistence handles, and timers.
 - Dense fixtures pass at 100, 200, and 500 objects on desktop; the 100-object mobile budget passes while 200/500 mobile cases are intentionally excluded as non-product target fixtures.
-- Production chunks: HTML 40.01 kB (8.65 kB gzip), CSS 55.23 kB (12.30 kB gzip), game 687.03 kB (185.47 kB gzip), lazy GLTF loader 44.29 kB (13.18 kB gzip), Three.js core 242.04 kB (66.02 kB gzip).
+- Production chunks: HTML 40.04 kB (8.66 kB gzip), CSS 55.34 kB (12.33 kB gzip), game 687.09 kB (185.49 kB gzip), lazy GLTF loader 44.29 kB (13.18 kB gzip), Three.js core 242.04 kB (66.02 kB gzip).
 
 ## External asset sourcing
 
@@ -97,6 +97,8 @@ The 3D asset was reduced from 58.06 MB / 1,023,836 uploaded vertices / 4K maps t
 - CSS: Stylelint passes; `git diff --check` passes.
 - Browser suite: **154 passed, 6 intentional platform skips, 0 failed** across desktop Chrome and mobile Safari emulation, two GPU-safe workers, no retries.
 - CI parity: the project-specific one-worker configuration passes locally as **79 desktop passed / 1 intentional skip** and **75 mobile passed / 5 intentional skips**, with statically loaded browser test modules and 0 failures.
+- Pages path parity: Vite keeps its development/test server at `/` while applying `/my-room-decoration/` only to production builds. The full suite also passes with `GITHUB_ACTIONS=true` under a newer Node runtime, covering the exact condition that previously hid the secondary browser harness behind the Pages prefix.
+- Slow-run synchronization: editor tests wait for the product's actual ready/Walk diagnostics transitions; renderer, movement, LCP, target-size, and accessibility thresholds remain unchanged. The two timing-sensitive Walk/render gates also pass three consecutive desktop and mobile repetitions.
 - Desktop: default room, four wall shapes, orbit cutaway, Walk, placement, precision, photo, persistence, density, responsive layouts, accessibility, and sharing pass.
 - Mobile: touch movement/look, labeled D-pad, zoom/height, placement, 100-object budget, responsive/200% text, photo, and accessibility pass.
 - Photo soak: 20 consecutive iOS-class standard captures pass without context errors.
