@@ -29,7 +29,11 @@ interface ThreeGameDiagnostics {
       kind: string;
       valid: boolean;
       x: number;
+      y: number;
       z: number;
+      surface: "floor" | "surface" | "wall" | "ceiling";
+      wallSide: "back" | "front" | "left" | "right" | null;
+      supportId: string | null;
     } | null;
     objects: Array<{
       id: string;

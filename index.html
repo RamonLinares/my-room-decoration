@@ -24,33 +24,36 @@
         from the In this room tab.
       </p>
       <header id="topbar">
-        <div>
-          <span class="eyebrow">MY LITTLE ROOM</span>
-          <div class="room-name-row">
-            <h1 id="room-name">A room of your own</h1>
-            <button
-              id="rename-room"
-              class="rename-room"
-              aria-label="Rename room"
-              aria-controls="rename-form"
-              aria-expanded="false"
-              title="Rename room"
-            >
-              ✎
-            </button>
-            <form id="rename-form" class="rename-form" hidden>
-              <label class="sr-only" for="room-name-input">Room name</label>
-              <input
-                id="room-name-input"
-                type="text"
-                maxlength="60"
-                autocomplete="off"
-              />
-              <button type="submit">Save name</button>
-              <button id="cancel-rename" type="button">Cancel</button>
-            </form>
+        <div class="room-identity">
+          <span class="room-emblem" aria-hidden="true">⌂</span>
+          <div class="room-identity-copy">
+            <span class="eyebrow">MY LITTLE ROOM</span>
+            <div class="room-name-row">
+              <h1 id="room-name">A room of your own</h1>
+              <button
+                id="rename-room"
+                class="rename-room"
+                aria-label="Rename room"
+                aria-controls="rename-form"
+                aria-expanded="false"
+                title="Rename room"
+              >
+                ✎
+              </button>
+              <form id="rename-form" class="rename-form" hidden>
+                <label class="sr-only" for="room-name-input">Room name</label>
+                <input
+                  id="room-name-input"
+                  type="text"
+                  maxlength="60"
+                  autocomplete="off"
+                />
+                <button type="submit">Save name</button>
+                <button id="cancel-rename" type="button">Cancel</button>
+              </form>
+            </div>
+            <span id="save-state" class="save-state" role="status" aria-live="polite">Saved</span>
           </div>
-          <span id="save-state" class="save-state" role="status" aria-live="polite">Saved</span>
         </div>
         <div class="top-actions">
           <button id="undo" title="Undo" aria-label="Undo">↶</button
@@ -69,7 +72,10 @@
         <div class="handle"></div>
         <div class="catalog-head">
           <div>
-            <span id="catalog-count" class="eyebrow">THE TOY CHEST</span>
+            <span class="catalog-kicker">
+              <span aria-hidden="true">▣</span>
+              <span id="catalog-count" class="eyebrow">THE TOY CHEST</span>
+            </span>
             <h2 id="catalog-title">Choose something lovely</h2>
           </div>
           <button
@@ -87,7 +93,7 @@
             aria-selected="true"
             aria-controls="catalog-add-view"
           >
-            Add objects
+            <span aria-hidden="true">⊕</span> Add objects
           </button>
           <button
             id="catalog-room-tab"
@@ -95,7 +101,7 @@
             aria-selected="false"
             aria-controls="catalog-room-view"
           >
-            In this room
+            <span aria-hidden="true">♙</span> In this room
           </button>
         </div>
         <div class="catalog-body">
@@ -116,7 +122,7 @@
             />
           </form>
           <details class="catalog-filter-drawer">
-            <summary>Filter &amp; sort</summary>
+            <summary><span aria-hidden="true">☷</span> Filter &amp; sort</summary>
           <div class="catalog-filters" aria-label="Filter and sort objects">
             <label>Placement
               <select id="catalog-placement">
@@ -144,12 +150,6 @@
             </label>
           </div>
           </details>
-          <div class="catalog-collections" aria-label="Curated collections">
-            <span class="room-label">Collections</span>
-            <div id="catalog-collection-list"></div>
-            <button id="catalog-surprise">✦ Surprise me</button>
-            <p id="catalog-context-note"></p>
-          </div>
           <div id="categories" aria-label="Object categories">
             <button class="active" data-cat="all" aria-pressed="true">All</button
             ><button data-cat="recent" aria-pressed="false">Recently used</button
@@ -162,6 +162,12 @@
             ><button data-cat="decor" aria-pressed="false">Decor</button
             ><button data-cat="keepsake" aria-pressed="false">Memories</button
             ><button data-cat="plant" aria-pressed="false">Growing</button>
+          </div>
+          <div class="catalog-collections" aria-label="Curated collections">
+            <span class="room-label">Collections</span>
+            <div id="catalog-collection-list"></div>
+            <button id="catalog-surprise">✦ Surprise me</button>
+            <p id="catalog-context-note"></p>
           </div>
           <p id="catalog-summary" aria-live="polite"></p>
           </div>
@@ -533,15 +539,24 @@
       </aside>
       <section id="selection" class="hidden" aria-hidden="true" inert hidden>
         <span class="selected-summary"><strong id="selected-name">Keepsake</strong><small id="selected-transform">0° · 100% · floor</small></span
-        ><button id="rotate-left">↶ Rotate</button
-        ><button id="rotate-right">Rotate ↷</button
-        ><button id="smaller">− Smaller</button
-        ><button id="larger">＋ Larger</button
+        ><div class="selection-control-group selection-rotation" role="group" aria-label="Rotate selected object">
+          <span class="selection-control-label">Rotate</span>
+          <button id="rotate-left" aria-label="Rotate selected object left" title="Rotate left (Q)">↶</button>
+          <button id="rotate-right" aria-label="Rotate selected object right" title="Rotate right (E)">↷</button>
+        </div
+        ><div class="selection-control-group selection-height" role="group" aria-label="Change selected object height">
+          <span class="selection-control-label">Height</span>
+          <button id="lower" aria-label="Lower selected object" title="Lower (F)">↓</button>
+          <button id="raise" aria-label="Raise selected object" title="Raise (R)">↑</button>
+        </div
+        ><div class="selection-control-group selection-size" role="group" aria-label="Resize selected object">
+          <span class="selection-control-label">Size</span>
+          <button id="smaller" aria-label="Make selected object smaller">−</button>
+          <button id="larger" aria-label="Make selected object larger">＋</button>
+        </div
         ><details class="selection-more">
           <summary>More</summary>
           <div class="selection-more-actions">
-            <button id="lower" aria-label="Lower selected object">↓ Lower</button>
-            <button id="raise" aria-label="Raise selected object">↑ Raise</button>
             <label class="selected-color">Color <input id="color" type="color" aria-label="Choose selected object color" /></label>
             <button id="duplicate">Duplicate</button>
             <button id="focus-selection">⌖ Focus camera</button>
@@ -561,6 +576,11 @@
           <strong id="placement-name">Place object</strong>
           <small id="placement-status" role="status" aria-live="polite">Move over the floor, then place.</small>
         </span>
+        <div class="placement-height-control" role="group" aria-label="Adjust placement height">
+          <span>Height <output id="placement-height-value" aria-live="polite">0.0</output></span>
+          <button id="placement-lower" aria-label="Lower object preview" title="Lower (F)">↓</button>
+          <button id="placement-raise" aria-label="Raise object preview" title="Raise (R)">↑</button>
+        </div>
         <button id="placement-rotate">↷ Rotate</button>
         <button id="placement-confirm" class="primary">Place here</button>
         <button id="placement-cancel">Cancel</button>

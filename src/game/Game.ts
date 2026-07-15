@@ -19,6 +19,11 @@ import {
   WallFinishStyle,
 } from "../assets/materials/RoomFinishTextures";
 import {
+  createCozyFabricMaterial,
+  createCozyMatteMaterial,
+  createCozyWoodMaterial,
+} from "../assets/materials/CozyMaterialLibrary";
+import {
   REAL_ROOM_CATALOG,
   REAL_ROOM_FLOOR_ONLY_KINDS,
   REAL_ROOM_SUPPORT_HEIGHTS,
@@ -33,6 +38,14 @@ import {
 import { SurfaceController } from "../ui/SurfaceController";
 import { AudioSystem } from "../systems/AudioSystem";
 import { SafeFrameCameraController } from "../systems/SafeFrameCamera";
+import {
+  nearestWallSegment,
+  raycastBoundaryWall,
+  roomBoundaryWalls,
+  wallSideLabel,
+  type PlacementWallSegment,
+  type PlacementWallSide,
+} from "../systems/RoomPlacementSolver";
 import { MyRoomPersistence } from "../persistence/MyRoomPersistence";
 import type { RoomRecord, ScrapbookEntry } from "../persistence/types";
 import { ROOM_STORIES, evaluateRoomStory, roomStoryById } from "./RoomStories";
@@ -105,6 +118,7 @@ type ItemData = {
   color: number;
   scale?: number;
   supportId?: string;
+  wallSide?: PlacementWallSide;
   locked?: boolean;
   hidden?: boolean;
   groupId?: string;
@@ -556,6 +570,8 @@ const CATALOG: CatalogItem[] = [
     category: "decor",
     icon: "🪟",
     note: "A view of afternoon",
+    placement: "wall",
+    defaultY: 2.45,
   },
   {
     kind: "wallframes",
@@ -563,6 +579,8 @@ const CATALOG: CatalogItem[] = [
     category: "decor",
     icon: "🖼️",
     note: "Three little memories",
+    placement: "wall",
+    defaultY: 3.3,
   },
   {
     kind: "wallshelf",
@@ -570,6 +588,8 @@ const CATALOG: CatalogItem[] = [
     category: "furniture",
     icon: "📚",
     note: "Books above the floor",
+    placement: "wall",
+    defaultY: 4.3,
   },
   ...EXPANDED_CATALOG,
   ...REAL_ROOM_CATALOG,
@@ -648,7 +668,7 @@ export class Game {
   private readonly compactToolsQuery = matchMedia("(max-width: 899px)");
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
+  private camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
   private controls: OrbitControls;
   private focusCamera: SafeFrameCameraController;
   private loop = new Loop(
@@ -660,7 +680,9 @@ export class Game {
   private items = new Map<string, THREE.Group>();
   private data: ItemData[] = [];
   private selected?: THREE.Group;
+  private selectionHelper?: THREE.BoxHelper;
   private placement?: PlacementPreview;
+  private placementPointerGuardUntil = 0;
   private drag = false;
   private dragValid = true;
   private dragOffset = new THREE.Vector3();
@@ -913,20 +935,30 @@ export class Game {
     delete window.advanceTime;
   }
   private createWorld() {
-    this.scene.background = new THREE.Color(0x9fa9a1);
-    this.scene.fog = new THREE.Fog(0xb9b4a5, 24, 46);
-    this.hemisphereLight = new THREE.HemisphereLight(0xc9dddf, 0x5b382b, 1.9);
+    const mood = getLightingMood(this.lightingMood);
+    this.scene.background = new THREE.Color(mood.sceneBackground);
+    this.scene.fog = new THREE.Fog(mood.fogColor, mood.fogNear, mood.fogFar);
+    this.hemisphereLight = new THREE.HemisphereLight(
+      mood.hemisphereSky,
+      mood.hemisphereGround,
+      mood.hemisphereIntensity,
+    );
     this.scene.add(this.hemisphereLight);
-    this.keyLight = new THREE.SpotLight(0xffd69b, 80, 35, 0.65, 0.5, 1.3);
-    this.keyLight.position.set(-5, 10, 6);
+    this.keyLight = new THREE.SpotLight(mood.keyColor, mood.keyIntensity, 35, 0.7, 0.72, 1.4);
+    this.keyLight.position.fromArray(mood.keyPosition);
     this.keyLight.target.position.set(0, 0, 0);
     this.keyLight.castShadow = true;
     this.keyLight.shadow.mapSize.set(1024, 1024);
+    this.keyLight.shadow.bias = -0.00025;
+    this.keyLight.shadow.normalBias = 0.035;
+    this.keyLight.shadow.radius = 3;
+    this.keyLight.shadow.camera.near = 1;
+    this.keyLight.shadow.camera.far = 28;
     this.scene.add(this.keyLight, this.keyLight.target);
-    this.fillLight = new THREE.DirectionalLight(0xaed7e6, 1.6);
+    this.fillLight = new THREE.DirectionalLight(mood.fillColor, mood.fillIntensity);
     this.fillLight.position.set(8, 7, -4);
     this.scene.add(this.fillLight);
-    this.lampLight = new THREE.PointLight(0xffa94e, 5, 10, 2);
+    this.lampLight = new THREE.PointLight(mood.lampColor, mood.lampIntensity, 10, 2);
     this.lampLight.position.set(-4, 4, -3);
     this.scene.add(this.lampLight);
     this.floorTex = new THREE.TextureLoader().load(
@@ -1112,6 +1144,109 @@ export class Game {
         if (extension) rects.push(extension);
       }
     return rects;
+  }
+  private placementWallSegments() {
+    const rects = [...this.roomRects(false)];
+    for (const item of this.data) {
+      const extension = this.extensionRect(item);
+      if (extension) rects.push(extension);
+    }
+    return roomBoundaryWalls(rects);
+  }
+  private catalogFor(data: ItemData) {
+    return CATALOG.find((item) => item.kind === data.kind);
+  }
+  private isWallItem(data: ItemData) {
+    return this.catalogFor(data)?.placement === "wall";
+  }
+  private localBoundsAtRotation(group: THREE.Group, rotation: number) {
+    const position = group.position.clone(),
+      previousRotation = group.rotation.y;
+    group.position.set(0, 0, 0);
+    group.rotation.y = rotation;
+    group.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(group);
+    group.position.copy(position);
+    group.rotation.y = previousRotation;
+    group.updateMatrixWorld(true);
+    return bounds;
+  }
+  private placeOnWall(
+    data: ItemData,
+    group: THREE.Group,
+    wall: PlacementWallSegment,
+    x: number,
+    z: number,
+    desiredY = data.y ?? 0,
+  ) {
+    const bounds = this.localBoundsAtRotation(group, wall.rotationY),
+      margin = 0.08,
+      gap = 0.035,
+      horizontal = wall.inwardZ !== 0,
+      alongSize = horizontal
+        ? bounds.max.x - bounds.min.x
+        : bounds.max.z - bounds.min.z,
+      fitsWallSpan = alongSize + margin * 2 <= wall.length;
+    let nextX: number,
+      nextZ: number;
+    if (horizontal) {
+      const minX = wall.cx - wall.length / 2 + margin - bounds.min.x,
+        maxX = wall.cx + wall.length / 2 - margin - bounds.max.x;
+      nextX = minX <= maxX
+        ? THREE.MathUtils.clamp(x, minX, maxX)
+        : wall.cx - (bounds.min.x + bounds.max.x) / 2;
+      nextZ = wall.inwardZ > 0
+        ? wall.cz + gap - bounds.min.z
+        : wall.cz - gap - bounds.max.z;
+    } else {
+      const minZ = wall.cz - wall.length / 2 + margin - bounds.min.z,
+        maxZ = wall.cz + wall.length / 2 - margin - bounds.max.z;
+      nextZ = minZ <= maxZ
+        ? THREE.MathUtils.clamp(z, minZ, maxZ)
+        : wall.cz - (bounds.min.z + bounds.max.z) / 2;
+      nextX = wall.inwardX > 0
+        ? wall.cx + gap - bounds.min.x
+        : wall.cx - gap - bounds.max.x;
+    }
+    const wallMounted = this.isWallItem(data),
+      floorAnchored = new Set(["rr-radiator", "rr-interior-door"]),
+      minY = floorAnchored.has(data.kind) ? -bounds.min.y : 0.18 - bounds.min.y,
+      maxY = Math.max(minY, 6.82 - bounds.max.y),
+      nextY = !wallMounted
+        ? desiredY
+        : floorAnchored.has(data.kind)
+          ? minY
+          : THREE.MathUtils.clamp(desiredY, minY, maxY);
+    data.x = nextX;
+    data.y = nextY;
+    data.z = nextZ;
+    data.rot = wall.rotationY;
+    data.wallSide = wallMounted && fitsWallSpan ? wall.side : undefined;
+    data.supportId = undefined;
+    group.position.set(nextX, nextY, nextZ);
+    group.rotation.y = wall.rotationY;
+    group.updateMatrixWorld(true);
+    return wall;
+  }
+  private placeOnNearestWall(
+    data: ItemData,
+    group: THREE.Group,
+    x: number,
+    z: number,
+    desiredY = data.y ?? 0,
+  ) {
+    const wall = nearestWallSegment(this.placementWallSegments(), x, z);
+    if (!wall) return undefined;
+    return this.placeOnWall(data, group, wall, x, z, desiredY);
+  }
+  private placeOnWallFromRay(data: ItemData, group: THREE.Group) {
+    const hit = raycastBoundaryWall(
+      this.ray.ray,
+      this.placementWallSegments(),
+      7,
+    );
+    if (!hit) return undefined;
+    return this.placeOnWall(data, group, hit.wall, hit.point.x, hit.point.z, hit.point.y);
   }
   private disposeGroup(group: THREE.Group) {
     group.traverse((object) => {
@@ -1707,6 +1842,8 @@ export class Game {
       this.placement.group.rotation.y = this.placement.data.rot;
       this.refreshPlacementValidity();
     };
+    $("#placement-lower").onclick = () => this.adjustPlacementHeight(-0.2);
+    $("#placement-raise").onclick = () => this.adjustPlacementHeight(0.2);
     this.renderCatalogCollections();
     this.renderChallengeVariants();
     openHelp.onclick = () => {
@@ -1956,6 +2093,12 @@ export class Game {
       } else if (e.key === "Enter" && this.placement) {
         e.preventDefault();
         this.commitPlacement();
+      } else if (this.placement && e.key.toLowerCase() === "r") {
+        e.preventDefault();
+        this.adjustPlacementHeight(0.2);
+      } else if (this.placement && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        this.adjustPlacementHeight(-0.2);
       } else if (e.key === "Delete" || e.key === "Backspace") this.remove();
       else if (
         this.selected &&
@@ -2956,7 +3099,10 @@ export class Game {
         preview = document.createElement("img"),
         icon = document.createElement("span"),
         note = document.createElement("small"),
-        addLabel = document.createElement("em");
+        name = document.createElement("strong"),
+        actions = document.createElement("span"),
+        previewAction = document.createElement("span"),
+        placeAction = document.createElement("span");
       card.className = "item-card";
       b.className = "item";
       b.setAttribute("aria-label", `${x.name}. ${x.note}`);
@@ -2966,9 +3112,16 @@ export class Game {
       preview.setAttribute("aria-hidden", "true");
       icon.textContent = x.icon;
       icon.className = "item-icon-fallback";
+      name.className = "item-name";
+      name.textContent = x.name;
       note.textContent = x.note;
-      addLabel.textContent = "+ Preview & place";
-      b.append(preview, icon, document.createTextNode(x.name), note, addLabel);
+      actions.className = "item-card-actions";
+      previewAction.className = "item-preview-action";
+      previewAction.textContent = "◉ Preview";
+      placeAction.className = "item-place-action";
+      placeAction.textContent = "+ Place";
+      actions.append(previewAction, placeAction);
+      b.append(preview, icon, name, note, actions);
       this.observeCatalogThumbnail(x, preview, icon);
       b.onclick = () => {
         this.recentKinds = [x.kind, ...this.recentKinds.filter((kind) => kind !== x.kind)].slice(0, 12);
@@ -3317,6 +3470,39 @@ export class Game {
     const data = this.findData();
     if (!data || !this.selected) return;
     if (data.locked) return this.announce(`${this.objectLabel(data)} is locked.`);
+    if (this.isWallItem(data)) {
+      const old = {
+        x: data.x,
+        y: data.y ?? 0,
+        z: data.z,
+        rot: data.rot,
+        wallSide: data.wallSide,
+      };
+      this.checkpoint();
+      this.placeOnNearestWall(
+        data,
+        this.selected,
+        data.x + dx,
+        data.z + dz,
+        data.y,
+      );
+      if (this.objectCollision(this.selected, data, new Set(), true)) {
+        Object.assign(data, old);
+        this.selected.position.set(old.x, old.y, old.z);
+        this.selected.rotation.y = old.rot;
+        this.history.pop();
+        this.setDragFeedback(false);
+        window.setTimeout(() => this.setDragFeedback(true, true), 280);
+        this.announce(`${this.objectLabel(data)} cannot move there because the wall space is occupied.`);
+        return;
+      }
+      this.changed();
+      this.syncObjectManagerSelection();
+      this.announce(
+        `${this.objectLabel(data)} moved along ${wallSideLabel(data.wallSide ?? "back")}.`,
+      );
+      return;
+    }
     const oldX = data.x,
       oldZ = data.z;
     this.checkpoint();
@@ -3351,67 +3537,62 @@ export class Game {
     const data = this.findData();
     if (!data || !this.selected) return;
     const group = this.selected,
-      old = { x: data.x, z: data.z, rot: data.rot },
-      inset = 0.2,
-      candidates: Array<{ x: number; z: number; rot: number; distance: number }> = [];
-    for (const rect of this.roomRects(true)) {
-      for (const side of ["back", "front", "left", "right"] as const) {
-        const rot = side === "left" || side === "right" ? Math.PI / 2 : 0;
-        group.rotation.y = rot;
-        const size = new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3()),
-          halfX = size.x / 2,
-          halfZ = size.z / 2;
-        let x = THREE.MathUtils.clamp(data.x, rect.minX + halfX, rect.maxX - halfX),
-          z = THREE.MathUtils.clamp(data.z, rect.minZ + halfZ, rect.maxZ - halfZ);
-        if (side === "back") z = rect.minZ + halfZ + inset;
-        if (side === "front") z = rect.maxZ - halfZ - inset;
-        if (side === "left") x = rect.minX + halfX + inset;
-        if (side === "right") x = rect.maxX - halfX - inset;
-        if (
-          x >= rect.minX + halfX &&
-          x <= rect.maxX - halfX &&
-          z >= rect.minZ + halfZ &&
-          z <= rect.maxZ - halfZ
-        )
-          candidates.push({
-            x,
-            z,
-            rot,
-            distance: (x - data.x) ** 2 + (z - data.z) ** 2,
-          });
+      old = {
+        x: data.x,
+        y: data.y ?? 0,
+        z: data.z,
+        rot: data.rot,
+        supportId: data.supportId,
+        wallSide: data.wallSide,
+      },
+      candidates = this.placementWallSegments()
+        .map((wall) => {
+          const along = wall.inwardZ !== 0
+              ? THREE.MathUtils.clamp(data.x, wall.cx - wall.length / 2, wall.cx + wall.length / 2)
+              : THREE.MathUtils.clamp(data.z, wall.cz - wall.length / 2, wall.cz + wall.length / 2),
+            x = wall.inwardZ !== 0 ? along : wall.cx,
+            z = wall.inwardZ !== 0 ? wall.cz : along;
+          return { wall, distance: (x - data.x) ** 2 + (z - data.z) ** 2 };
+        })
+        .sort((a, b) => a.distance - b.distance);
+    let target:
+      | { x: number; y: number; z: number; rot: number; wallSide?: PlacementWallSide }
+      | undefined;
+    for (const candidate of candidates) {
+      this.placeOnWall(data, group, candidate.wall, old.x, old.z, old.y);
+      if (!this.objectCollision(group, data, new Set(), true)) {
+        target = {
+          x: data.x,
+          y: data.y ?? old.y,
+          z: data.z,
+          rot: data.rot,
+          wallSide: data.wallSide,
+        };
+        break;
       }
     }
+    Object.assign(data, old);
+    group.position.set(old.x, old.y, old.z);
     group.rotation.y = old.rot;
-    const target = candidates.sort((a, b) => a.distance - b.distance)[0];
     if (!target) {
       this.announce(`${this.objectLabel(data)} cannot fit against a wall.`);
       return;
     }
     this.checkpoint();
     data.x = target.x;
+    data.y = target.y;
     data.z = target.z;
     data.rot = target.rot;
-    group.position.set(data.x, data.y ?? 0, data.z);
+    data.supportId = undefined;
+    data.wallSide = target.wallSide;
+    group.position.set(data.x, data.y, data.z);
     group.rotation.y = data.rot;
-    const ignored = new Set<string>();
-    if (data.supportId) ignored.add(data.supportId);
-    if (this.objectCollision(group, data, ignored)) {
-      data.x = old.x;
-      data.z = old.z;
-      data.rot = old.rot;
-      group.position.set(data.x, data.y ?? 0, data.z);
-      group.rotation.y = data.rot;
-      this.history.pop();
-      this.updateButtons();
-      this.setDragFeedback(false);
-      window.setTimeout(() => this.setDragFeedback(true, true), 280);
-      this.announce(`${this.objectLabel(data)} cannot align there because another object is in the way.`);
-      return;
-    }
     this.changed();
     this.syncObjectManagerSelection();
     this.syncTransformReadout();
-    this.announce(`${this.objectLabel(data)} aligned to the nearest wall.`);
+    this.announce(
+      `${this.objectLabel(data)} aligned to ${wallSideLabel(target.wallSide ?? "back")}.`,
+    );
   }
   private runObjectManagerAction(action: string) {
     if (action === "undo") {
@@ -3540,19 +3721,9 @@ export class Game {
       group.position.set(data.x, 0, data.z);
       group.rotation.y = data.rot;
     } else if (catalog.placement === "wall") {
-      this.positionAgainstNearestWall(data, group, 0, -this.roomDepth / 2);
+      this.findOpenWallSpot(data, group);
     } else if (catalog.placement === "surface") {
-      const support = [...this.items.values()].find((item) => {
-        const supportData = this.data.find((entry) => entry.id === item.userData.itemId);
-        return Boolean(supportData && SUPPORT_KINDS.has(supportData.kind));
-      });
-      if (support) {
-        data.x = support.position.x;
-        data.z = support.position.z;
-        data.y = this.supportTop(support) + 0.025;
-        data.supportId = support.userData.itemId;
-        group.position.set(data.x, data.y, data.z);
-      } else {
+      if (!this.findOpenSupportSpot(data, group)) {
         const spot = this.findOpenFloorSpot(group, data);
         data.x = spot.x;
         data.z = spot.z;
@@ -3566,9 +3737,14 @@ export class Game {
     }
     marker.rotation.x = -Math.PI / 2;
     marker.position.set(data.x, 0.025, data.z);
+    marker.visible = catalog.placement !== "wall";
     marker.renderOrder = 1000;
     this.scene.add(group, marker);
     this.placement = { catalog, data, group, marker, valid: true };
+    // Closing the catalog exposes the canvas under the pointer. Ignore that
+    // incidental mouse transition so a good automatic spot is not replaced by
+    // wherever the pointer happens to cross on its way to the toolbar.
+    this.placementPointerGuardUntil = performance.now() + 650;
     document.querySelector("#placement-name")!.textContent = `Place ${catalog.name}`;
     this.surfaces.setPersistent("placement-toolbar", true);
     document.body.classList.add("placing-object");
@@ -3585,7 +3761,8 @@ export class Game {
     exhaustive = false,
   ) {
     if (["memoryrug", "roundrug"].includes(data.kind)) return false;
-    const candidate = new THREE.Box3().setFromObject(group).expandByScalar(-0.06);
+    const candidate = new THREE.Box3().setFromObject(group).expandByScalar(-0.06),
+      candidatePlacement = this.catalogFor(data)?.placement;
     const nearbyIds = exhaustive
       ? new Set(this.items.keys())
       : this.collisionCandidates(candidate);
@@ -3600,8 +3777,8 @@ export class Game {
       if (
         !otherData ||
         ["memoryrug", "roundrug"].includes(otherData.kind) ||
-        otherCatalog?.placement === "wall" ||
-        otherCatalog?.placement === "ceiling"
+        otherCatalog?.placement === "ceiling" ||
+        (otherCatalog?.placement === "wall" && candidatePlacement !== "wall")
       )
         continue;
       const otherBox = new THREE.Box3().setFromObject(other).expandByScalar(-0.06);
@@ -3669,7 +3846,13 @@ export class Game {
     const { data, group, marker } = this.placement,
       ignored = new Set<string>(data.supportId ? [data.supportId] : []),
       collision = this.objectCollision(group, data, ignored),
-      inside = Boolean(this.placementPoint(group, data.x, data.z)),
+      clamped = this.placementPoint(group, data.x, data.z),
+      isWall = this.placement.catalog.placement === "wall",
+      inside = isWall
+        ? Boolean(data.wallSide)
+        : Boolean(clamped) &&
+          Math.abs((clamped?.x ?? data.x) - data.x) < 1e-5 &&
+          Math.abs((clamped?.z ?? data.z) - data.z) < 1e-5,
       needsSupport = this.placement.catalog.placement === "surface",
       valid = inside && !collision && (!needsSupport || Boolean(data.supportId)),
       color = valid ? 0x3e9b5f : 0xc14d43;
@@ -3689,7 +3872,11 @@ export class Game {
     const status = document.querySelector<HTMLElement>("#placement-status")!,
       confirm = document.querySelector<HTMLButtonElement>("#placement-confirm")!;
     status.textContent = valid
-      ? "Valid position — place here."
+      ? isWall && data.wallSide
+        ? `${wallSideLabel(data.wallSide)} · ${(data.y ?? 0).toFixed(1)} high · ready to place.`
+        : data.supportId
+          ? `On ${this.objectLabel(this.data.find((item) => item.id === data.supportId)!)} · ready to place.`
+          : "Room floor · ready to place."
       : needsSupport && !data.supportId
         ? "Place this object on a table, desk, shelf, or cabinet."
         : collision
@@ -3697,26 +3884,60 @@ export class Game {
         : "This object must stay inside the room.";
     status.dataset.valid = String(valid);
     confirm.disabled = !valid;
+    this.syncPlacementHeightControl();
+  }
+  private adjustPlacementHeight(delta: number) {
+    if (!this.placement || ARCHITECTURAL_KINDS.has(this.placement.data.kind)) return;
+    const { data, group } = this.placement,
+      nextY = THREE.MathUtils.clamp((data.y ?? 0) + delta, 0, 6);
+    if (nextY === (data.y ?? 0)) return;
+    data.y = nextY;
+    data.supportId = undefined;
+    if (this.placement.catalog.placement === "wall")
+      this.placeOnNearestWall(data, group, data.x, data.z, nextY);
+    else
+      group.position.set(data.x, data.y, data.z);
+    this.refreshPlacementValidity();
+    this.audio("place");
+    this.announce(`${data.name} preview height ${data.y.toFixed(1)}.`);
+  }
+  private syncPlacementHeightControl() {
+    if (!this.placement) return;
+    const isArchitectural = ARCHITECTURAL_KINDS.has(this.placement.data.kind),
+      height = this.placement.data.y ?? 0,
+      control = document.querySelector<HTMLElement>(".placement-height-control"),
+      output = document.querySelector<HTMLOutputElement>("#placement-height-value"),
+      lower = document.querySelector<HTMLButtonElement>("#placement-lower"),
+      raise = document.querySelector<HTMLButtonElement>("#placement-raise");
+    control?.toggleAttribute("hidden", isArchitectural);
+    if (output) output.value = height.toFixed(1);
+    if (lower) lower.disabled = isArchitectural || height <= 0;
+    if (raise) raise.disabled = isArchitectural || height >= 6;
   }
   private updatePlacementFromPointer(event: PointerEvent) {
     if (!this.placement) return;
-    this.setPointer(event);
-    this.ray.setFromCamera(this.pointer, this.camera);
-    const hit = new THREE.Vector3();
     if (
-      !this.ray.ray.intersectPlane(
-        new THREE.Plane(new THREE.Vector3(0, 1, 0)),
-        hit,
-      )
+      event.isTrusted &&
+      event.pointerType === "mouse" &&
+      performance.now() < this.placementPointerGuardUntil
     )
       return;
+    this.setPointer(event);
+    this.ray.setFromCamera(this.pointer, this.camera);
+    const hit = new THREE.Vector3(),
+      floorHit = this.ray.ray.intersectPlane(
+        new THREE.Plane(new THREE.Vector3(0, 1, 0)),
+        hit,
+      );
     const { data, group, marker } = this.placement;
     if (ARCHITECTURAL_KINDS.has(data.kind)) {
+      if (!floorHit) return;
       this.snapDoorToWall(data, hit.x, hit.z);
       group.position.set(data.x, 0, data.z);
       group.rotation.y = data.rot;
     } else if (this.placement.catalog.placement === "wall") {
-      this.positionAgainstNearestWall(data, group, hit.x, hit.z);
+      if (!this.placeOnWallFromRay(data, group) && floorHit)
+        this.placeOnNearestWall(data, group, hit.x, hit.z, data.y);
     } else if (this.placement.catalog.placement === "surface") {
       const supportIntersection = this.ray
         .intersectObjects([...this.items.values()], true)
@@ -3731,18 +3952,26 @@ export class Game {
         ? this.ownerOf(supportIntersection.object)
         : undefined;
       if (supportHit) {
-        data.x = supportIntersection!.point.x;
-        data.z = supportIntersection!.point.z;
-        data.y = this.supportTop(supportHit) + 0.025;
-        data.supportId = supportHit.userData.itemId;
-        group.position.set(data.x, data.y, data.z);
+        const top = this.supportTop(supportHit),
+          planeHit = this.ray.ray.intersectPlane(
+            new THREE.Plane(new THREE.Vector3(0, 1, 0), -top),
+            new THREE.Vector3(),
+          ) ?? supportIntersection!.point;
+        if (!this.placeOnSupport(data, group, supportHit, planeHit.x, planeHit.z)) {
+          data.x = planeHit.x;
+          data.z = planeHit.z;
+          data.y = top + 0.025;
+          group.position.set(data.x, data.y, data.z);
+        }
       } else {
+        if (!floorHit) return;
         data.supportId = undefined;
         data.x = hit.x;
         data.z = hit.z;
         group.position.set(data.x, data.y ?? 0, data.z);
       }
     } else {
+      if (!floorHit) return;
       const x = this.gridSnap ? Math.round(hit.x * 2) / 2 : hit.x,
         z = this.gridSnap ? Math.round(hit.z * 2) / 2 : hit.z,
         position = this.clampToRoom(group, x, z);
@@ -3753,39 +3982,67 @@ export class Game {
     marker.position.set(data.x, 0.025, data.z);
     this.refreshPlacementValidity();
   }
-  private positionAgainstNearestWall(
-    data: ItemData,
-    group: THREE.Group,
-    x: number,
-    z: number,
-  ) {
-    const rect = this.roomRects(true).sort((a, b) => {
-        const distance = (r: RoomRect) => {
-          const px = THREE.MathUtils.clamp(x, r.minX, r.maxX),
-            pz = THREE.MathUtils.clamp(z, r.minZ, r.maxZ);
-          return (px - x) ** 2 + (pz - z) ** 2;
-        };
-        return distance(a) - distance(b);
-      })[0],
-      distances = [
-        { side: "back" as const, value: Math.abs(z - rect.minZ) },
-        { side: "front" as const, value: Math.abs(z - rect.maxZ) },
-        { side: "left" as const, value: Math.abs(x - rect.minX) },
-        { side: "right" as const, value: Math.abs(x - rect.maxX) },
-      ],
-      side = distances.sort((a, b) => a.value - b.value)[0].side;
-    data.rot = side === "left" || side === "right" ? Math.PI / 2 : 0;
-    group.rotation.y = data.rot;
-    const size = new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3()),
-      halfX = size.x / 2,
-      halfZ = size.z / 2;
-    data.x = THREE.MathUtils.clamp(x, rect.minX + halfX, rect.maxX - halfX);
-    data.z = THREE.MathUtils.clamp(z, rect.minZ + halfZ, rect.maxZ - halfZ);
-    if (side === "back") data.z = rect.minZ + halfZ + 0.03;
-    if (side === "front") data.z = rect.maxZ - halfZ - 0.03;
-    if (side === "left") data.x = rect.minX + halfX + 0.03;
-    if (side === "right") data.x = rect.maxX - halfX - 0.03;
-    group.position.set(data.x, data.y ?? 0, data.z);
+  private findOpenWallSpot(data: ItemData, group: THREE.Group) {
+    const walls = this.placementWallSegments().sort((a, b) => b.length - a.length),
+      desiredY = this.catalogFor(data)?.defaultY ?? data.y ?? 2.8;
+    for (const wall of walls) {
+      const bounds = this.localBoundsAtRotation(group, wall.rotationY),
+        alongSize = wall.inwardZ !== 0
+          ? bounds.max.x - bounds.min.x
+          : bounds.max.z - bounds.min.z;
+      if (wall.length < alongSize + 0.16) continue;
+      const usable = Math.max(0, wall.length - alongSize - 0.16),
+        slots = Math.max(1, Math.ceil(usable / 0.65) + 1);
+      for (let index = 0; index < slots; index += 1) {
+        const amount = slots === 1 ? 0.5 : index / (slots - 1),
+          along = -usable / 2 + usable * amount,
+          x = wall.inwardZ !== 0 ? wall.cx + along : wall.cx,
+          z = wall.inwardZ !== 0 ? wall.cz : wall.cz + along;
+        this.placeOnWall(data, group, wall, x, z, desiredY);
+        if (!this.objectCollision(group, data, new Set(), true)) return wall;
+      }
+    }
+    const fallback = walls[0];
+    if (fallback)
+      this.placeOnWall(data, group, fallback, fallback.cx, fallback.cz, desiredY);
+    return fallback;
+  }
+  private findOpenSupportSpot(data: ItemData, group: THREE.Group) {
+    const supports = [...this.items.values()].filter((item) => {
+      const supportData = this.data.find((entry) => entry.id === item.userData.itemId);
+      return Boolean(supportData && SUPPORT_KINDS.has(supportData.kind));
+    });
+    let fallback: THREE.Group | undefined;
+    for (const support of supports) {
+      const bounds = new THREE.Box3().setFromObject(support),
+        xs = [
+          (bounds.min.x + bounds.max.x) / 2,
+          bounds.min.x + (bounds.max.x - bounds.min.x) * 0.24,
+          bounds.min.x + (bounds.max.x - bounds.min.x) * 0.76,
+        ],
+        zs = [
+          (bounds.min.z + bounds.max.z) / 2,
+          bounds.min.z + (bounds.max.z - bounds.min.z) * 0.24,
+          bounds.min.z + (bounds.max.z - bounds.min.z) * 0.76,
+        ];
+      for (const x of xs)
+        for (const z of zs) {
+          if (!this.placeOnSupport(data, group, support, x, z)) continue;
+          fallback ??= support;
+          if (
+            !this.objectCollision(
+              group,
+              data,
+              new Set([support.userData.itemId]),
+              true,
+            )
+          )
+            return support;
+        }
+    }
+    if (fallback)
+      this.placeOnSupport(data, group, fallback, fallback.position.x, fallback.position.z);
+    return fallback;
   }
   private disposePlacementPreview() {
     if (!this.placement) return;
@@ -3856,6 +4113,7 @@ export class Game {
         PALETTE[Math.floor(Math.random() * PALETTE.length)],
       scale: d?.scale ?? 1,
       supportId: d?.supportId,
+      wallSide: d?.wallSide,
     };
     const g = this.makeItem(data);
     if (ARCHITECTURAL_KINDS.has(data.kind)) {
@@ -3879,6 +4137,11 @@ export class Game {
       }
       g.position.set(data.x, 0, data.z);
       g.rotation.y = data.rot;
+    } else if (c.placement === "wall") {
+      if (d?.x === undefined && d?.z === undefined)
+        this.findOpenWallSpot(data, g);
+      else
+        this.placeOnNearestWall(data, g, data.x, data.z, data.y);
     } else if (d?.x === undefined && d?.z === undefined) {
       const spot = this.findOpenFloorSpot(g, data);
       data.x = spot.x;
@@ -3956,6 +4219,10 @@ export class Game {
         this.syncArchitecturalExtension(d);
         continue;
       }
+      if (this.isWallItem(d)) {
+        this.placeOnNearestWall(d, g, d.x, d.z, d.y);
+        continue;
+      }
       if (!this.placementPoint(g, d.x, d.z)) {
         const size = new THREE.Box3()
           .setFromObject(g)
@@ -3998,54 +4265,88 @@ export class Game {
     }
   }
   private findOpenFloorSpot(g: THREE.Group, data: ItemData) {
-    const { halfX, halfZ } = this.roomLimitsFor(g),
-      padding = 0.28;
-    const occupied = [...this.items.values()].map((item) =>
-      new THREE.Box3().setFromObject(item),
-    );
-    const candidates: THREE.Vector2[] = [];
-    for (let ring = 0; ring < 9; ring++) {
-      const radius = ring * 1.25;
-      const count = ring === 0 ? 1 : ring * 10;
-      for (let i = 0; i < count; i++) {
-        const angle = -Math.PI / 4 + (i * Math.PI * 2) / count;
-        candidates.push(
-          new THREE.Vector2(Math.cos(angle) * radius, Math.sin(angle) * radius),
+    const occupied = [...this.items.entries()]
+      .filter(([id]) => {
+        const other = this.data.find((item) => item.id === id),
+          catalog = other ? this.catalogFor(other) : undefined;
+        return Boolean(
+          other &&
+            !["memoryrug", "roundrug"].includes(other.kind) &&
+            catalog?.placement !== "wall" &&
+            catalog?.placement !== "ceiling",
         );
-      }
-    }
+      })
+      .map(([, item]) =>
+        new THREE.Box3().setFromObject(item).expandByScalar(0.05),
+      );
+    const candidates: THREE.Vector2[] = [new THREE.Vector2(0, 0)],
+      seen = new Set(["0:0"]),
+      step = 0.55;
+    for (const rect of this.roomRects(true))
+      for (let x = rect.minX; x <= rect.maxX; x += step)
+        for (let z = rect.minZ; z <= rect.maxZ; z += step) {
+          const key = `${Math.round(x * 20)}:${Math.round(z * 20)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          candidates.push(new THREE.Vector2(x, z));
+        }
+    candidates.sort((a, b) => a.lengthSq() - b.lengthSq());
+    const initialRotation = data.rot;
+    let bestRotation = initialRotation;
+    g.rotation.y = initialRotation;
     const start = this.clampToRoom(g, 0, 0);
     let best = new THREE.Vector2(start.x, start.z),
       bestOverlap = Infinity;
-    for (const candidate of candidates) {
-      const clamped = this.clampToRoom(g, candidate.x, candidate.y),
-        p = new THREE.Vector2(clamped.x, clamped.z);
-      // Use the actual transformed footprint before accepting a position.
-      // Several models (notably armchairs) are intentionally asymmetric around
-      // their origin, so half-extents alone can report a false clear spot.
-      g.position.set(p.x, data.y ?? 0, p.y);
+    // Tall, shallow furniture often fits naturally in only one orientation.
+    // Search both axes before falling back to an overlapping preview so the
+    // first placement is actionable even in an already furnished room.
+    for (const rotation of [initialRotation, initialRotation + Math.PI / 2]) {
+      data.rot = rotation;
+      g.rotation.y = rotation;
+      delete g.userData.footprint;
       g.updateMatrixWorld(true);
-      // Placement previews are rare user actions, so prefer an exhaustive
-      // check here. The spatial grid remains the fast path for dragging and
-      // dense-room editing, while startup cannot expose a stale-grid gap.
-      if (!this.objectCollision(g, data, new Set(), true) && this.placementPoint(g, p.x, p.y))
-        return { x: p.x, z: p.y };
-      let overlap = 0;
-      for (const box of occupied) {
-        const dx =
-          Math.min(p.x + halfX + padding, box.max.x) -
-          Math.max(p.x - halfX - padding, box.min.x);
-        const dz =
-          Math.min(p.y + halfZ + padding, box.max.z) -
-          Math.max(p.y - halfZ - padding, box.min.z);
-        if (dx > 0 && dz > 0) overlap += dx * dz;
-      }
-      if (overlap === 0) return { x: p.x, z: p.y };
-      if (overlap < bestOverlap) {
-        bestOverlap = overlap;
-        best.copy(p);
+      const { halfX, halfZ } = this.roomLimitsFor(g),
+        padding = 0.28;
+      for (const candidate of candidates) {
+        const clamped = this.clampToRoom(g, candidate.x, candidate.y),
+          p = new THREE.Vector2(clamped.x, clamped.z);
+        // Use the actual transformed footprint before accepting a position.
+        // Several models are intentionally asymmetric around their origin.
+        g.position.set(p.x, data.y ?? 0, p.y);
+        g.updateMatrixWorld(true);
+        // Placement previews are rare user actions, so prefer an exhaustive
+        // check here. The spatial grid remains the fast path while dragging.
+        const clampedAgain = this.placementPoint(g, p.x, p.y),
+          inside =
+            Boolean(clampedAgain) &&
+            Math.abs((clampedAgain?.x ?? p.x) - p.x) < 1e-5 &&
+            Math.abs((clampedAgain?.z ?? p.y) - p.y) < 1e-5,
+          candidateBox = new THREE.Box3()
+            .setFromObject(g)
+            .expandByScalar(0.05),
+          clear = occupied.every((box) => !candidateBox.intersectsBox(box));
+        if (inside && clear)
+          return { x: p.x, z: p.y };
+        let overlap = 0;
+        for (const box of occupied) {
+          const dx =
+            Math.min(p.x + halfX + padding, box.max.x) -
+            Math.max(p.x - halfX - padding, box.min.x);
+          const dz =
+            Math.min(p.y + halfZ + padding, box.max.z) -
+            Math.max(p.y - halfZ - padding, box.min.z);
+          if (dx > 0 && dz > 0) overlap += dx * dz;
+        }
+        if (overlap < bestOverlap) {
+          bestOverlap = overlap;
+          bestRotation = rotation;
+          best.copy(p);
+        }
       }
     }
+    data.rot = bestRotation;
+    g.rotation.y = bestRotation;
+    delete g.userData.footprint;
     return { x: best.x, z: best.y };
   }
   private makeItem(d: ItemData) {
@@ -4065,6 +4366,12 @@ export class Game {
       color: 0x5a392b,
       roughness: 0.58,
     });
+    const fabric = (color: THREE.ColorRepresentation = d.color) =>
+      createCozyFabricMaterial(color);
+    const wood = (color: THREE.ColorRepresentation = d.color, roughness = 0.68) =>
+      createCozyWoodMaterial(color, roughness);
+    const matte = (color: THREE.ColorRepresentation, roughness = 0.82) =>
+      createCozyMatteMaterial(color, roughness);
     const add = (
       geo: THREE.BufferGeometry,
       m: THREE.Material,
@@ -4090,25 +4397,44 @@ export class Game {
     } else if (buildExpandedProp(g, d.kind, d.color)) {
       // Expanded props are authored in the shared procedural factory.
     } else if (d.kind === "bed") {
-      add(new THREE.BoxGeometry(3, 0.55, 4), dark, 0, 0.45, 0);
-      add(new THREE.BoxGeometry(2.8, 0.45, 3.65), cream, 0, 0.95, 0.08);
-      add(new THREE.BoxGeometry(2.72, 0.08, 2.28), mat, 0, 1.22, 0.66);
-      add(new THREE.BoxGeometry(1.12, 0.22, 0.62), cream, -0.62, 1.34, -1.08);
-      add(new THREE.BoxGeometry(1.12, 0.22, 0.62), cream, 0.62, 1.34, -1.08);
+      const frame = wood(0x6f4936, 0.62);
+      const linen = fabric(0xf3e8d5);
+      const duvet = fabric(d.color);
+      add(new RoundedBoxGeometry(3, 0.5, 4, 1, 0.09), frame, 0, 0.43, 0);
+      add(new RoundedBoxGeometry(2.82, 0.42, 3.7, 1, 0.12), linen, 0, 0.88, 0.06);
+      add(new RoundedBoxGeometry(2.72, 0.18, 2.42, 1, 0.08), duvet, 0, 1.17, 0.62);
+      add(new RoundedBoxGeometry(2.86, 1.26, 0.2, 1, 0.06), frame, 0, 1.18, -1.9);
+      for (const x of [-0.64, 0.64])
+        add(
+          new RoundedBoxGeometry(1.13, 0.24, 0.66, 1, 0.1),
+          linen,
+          x,
+          1.34,
+          -1.08,
+          0.04,
+          0,
+          -x * 0.03,
+        );
     } else if (d.kind === "desk") {
-      add(new THREE.BoxGeometry(2.8, 0.22, 1.4), mat, 0, 1.75, 0);
+      const desktop = wood(d.color, 0.62);
+      const legs = wood(0x694536, 0.66);
+      add(new RoundedBoxGeometry(2.8, 0.22, 1.4, 1, 0.07), desktop, 0, 1.75, 0);
+      add(new RoundedBoxGeometry(1.08, 0.34, 1.12, 1, 0.05), desktop, 0.72, 1.5, 0);
       for (const x of [-1.15, 1.15])
         for (const z of [-0.5, 0.5])
           add(
-            new THREE.CylinderGeometry(0.11, 0.14, 1.65, 8),
-            dark,
+            new THREE.CylinderGeometry(0.085, 0.14, 1.65, 12),
+            legs,
             x,
             0.85,
             z,
+            -Math.sign(z) * 0.035,
+            0,
+            Math.sign(x) * 0.035,
           );
       add(
-        new THREE.BoxGeometry(1.2, 0.1, 0.85),
-        cream,
+        new RoundedBoxGeometry(1.2, 0.06, 0.85, 1, 0.025),
+        matte(0xf4e8d2, 0.94),
         -0.35,
         1.92,
         0,
@@ -4159,25 +4485,30 @@ export class Game {
         line.rotation.y = ((i % 3) - 1) * 0.009;
       }
     } else if (d.kind === "chair") {
-      add(new RoundedBoxGeometry(1.4, 0.25, 1.4, 3, 0.045), mat, 0, 1.05, 0);
+      const upholstery = fabric(d.color);
+      const chairWood = wood(0x684532, 0.65);
+      add(new RoundedBoxGeometry(1.4, 0.25, 1.4, 4, 0.075), upholstery, 0, 1.05, 0);
       const chairBackGeo = new RoundedBoxGeometry(1.4, 1.72, 0.22, 3, 0.045);
       chairBackGeo.translate(0, 0.86, 0);
-      const chairBack = add(chairBackGeo, mat, 0, 1.08, 0.58, 0.14);
+      const chairBack = add(chairBackGeo, upholstery, 0, 1.08, 0.58, 0.14);
       chairBack.userData.pivot = "seat-back-base";
       for (const x of [-0.5, 0.5])
         for (const z of [-0.5, 0.5])
-          add(new THREE.CylinderGeometry(0.1, 0.13, 1, 8), dark, x, 0.5, z);
+          add(new THREE.CylinderGeometry(0.08, 0.13, 1, 10), chairWood, x, 0.5, z);
     } else if (d.kind === "shelf") {
       for (let i = 0; i < 3; i++)
         add(new THREE.BoxGeometry(2.5, 0.18, 0.8), mat, 0, 0.45 + i * 0.8, 0);
       for (const x of [-1.1, 1.1])
         add(new THREE.BoxGeometry(0.18, 2.2, 0.8), dark, x, 1.25, 0);
     } else if (d.kind === "lamp") {
-      add(new THREE.CylinderGeometry(0.5, 0.65, 0.18, 20), dark, 0, 0.1, 0);
-      add(new THREE.CylinderGeometry(0.07, 0.09, 1.8, 10), dark, 0, 1, 0);
+      const metal = new THREE.MeshStandardMaterial({ color: 0x6b4a37, roughness: 0.34, metalness: 0.35 });
+      const shade = fabric(d.color);
+      add(new THREE.CylinderGeometry(0.5, 0.65, 0.18, 24), metal, 0, 0.1, 0);
+      add(new THREE.CylinderGeometry(0.055, 0.08, 1.8, 12), metal, 0, 1, 0);
+      add(new THREE.TorusGeometry(0.18, 0.035, 8, 24), metal, 0, 1.66, 0, Math.PI / 2);
       add(
         new THREE.CylinderGeometry(0.34, 0.72, 0.7, 20, 1, true),
-        mat,
+        shade,
         0,
         2,
         0,
@@ -4190,6 +4521,10 @@ export class Game {
         0,
       );
       bulb.userData.glow = true;
+      const practical = new THREE.PointLight(0xffb566, 0.7, 4.5, 2);
+      practical.position.set(0, 1.82, 0);
+      practical.userData.cozyPractical = true;
+      g.add(practical);
     } else if (d.kind === "fairy") {
       for (let i = 0; i < 9; i++) {
         const x = -1.8 + i * 0.45,
@@ -4206,12 +4541,21 @@ export class Game {
         );
       }
     } else if (d.kind === "teddy") {
-      add(new THREE.SphereGeometry(0.55, 18, 14), mat, 0, 0.7, 0);
-      add(new THREE.SphereGeometry(0.42, 18, 14), mat, 0, 1.45, 0);
+      const plush = fabric(d.color);
+      const muzzle = fabric(0xe9c99b);
+      const features = matte(0x35231d, 0.55);
+      add(new THREE.SphereGeometry(0.55, 12, 8), plush, 0, 0.72, 0);
+      add(new THREE.SphereGeometry(0.42, 12, 8), plush, 0, 1.46, 0);
       for (const x of [-0.34, 0.34])
-        add(new THREE.SphereGeometry(0.18, 14, 10), mat, x, 1.75, 0);
+        add(new THREE.SphereGeometry(0.18, 10, 7), plush, x, 1.75, 0);
+      add(new THREE.SphereGeometry(0.24, 12, 8), muzzle, 0, 1.38, 0.34);
+      add(new THREE.SphereGeometry(0.07, 8, 6), features, 0, 1.48, 0.54);
       for (const x of [-0.25, 0.25])
-        add(new THREE.SphereGeometry(0.045, 8, 6), dark, x, 1.52, 0.38);
+        add(new THREE.SphereGeometry(0.045, 8, 6), features, x, 1.57, 0.37);
+      for (const x of [-0.5, 0.5])
+        add(new THREE.CapsuleGeometry(0.14, 0.48, 3, 6), plush, x, 0.83, 0, 0, 0, -x * 0.72);
+      for (const x of [-0.3, 0.3])
+        add(new THREE.CapsuleGeometry(0.17, 0.36, 3, 6), plush, x, 0.28, 0.1, Math.PI / 2, 0, 0);
     } else if (d.kind === "radio") {
       add(new THREE.BoxGeometry(1.5, 0.9, 0.55), mat, 0, 0.55, 0);
       add(new THREE.CircleGeometry(0.28, 20), dark, -0.32, 0.58, 0.281);
@@ -4252,20 +4596,16 @@ export class Game {
             Math.PI / 2,
           );
     } else if (d.kind === "books") {
-      for (let i = 0; i < 4; i++)
-        add(
-          new THREE.BoxGeometry(1.25, 0.18, 0.8),
-          new THREE.MeshStandardMaterial({
-            color: PALETTE[(i + 2) % PALETTE.length],
-            roughness: 0.85,
-          }),
-          0,
-          0.12 + i * 0.2,
-          0,
-          0,
-          (i - 1.5) * 0.05,
-          (i - 1.5) * 0.03,
-        );
+      for (let i = 0; i < 4; i++) {
+        const cover = matte(PALETTE[(i + 2) % PALETTE.length], 0.74);
+        const pages = matte(0xeadbc2, 0.96);
+        const y = 0.1 + i * 0.2;
+        const ry = (i - 1.5) * 0.05;
+        const rz = (i - 1.5) * 0.03;
+        add(new RoundedBoxGeometry(1.28, 0.18, 0.82, 1, 0.025), cover, 0, y, 0, 0, ry, rz);
+        add(new RoundedBoxGeometry(1.15, 0.12, 0.74, 1, 0.018), pages, 0.035, y, 0, 0, ry, rz);
+        add(new THREE.BoxGeometry(0.06, 0.14, 0.78), cover, -0.59, y, 0, 0, ry, rz);
+      }
     } else if (d.kind === "canopy") {
       add(new THREE.BoxGeometry(3, 0.5, 4), dark, 0, 0.4, 0);
       add(new THREE.BoxGeometry(2.8, 0.42, 3.7), cream, 0, 0.85, 0);
@@ -4274,27 +4614,44 @@ export class Game {
           add(new THREE.CylinderGeometry(0.05, 0.07, 3.3, 8), dark, x, 1.9, z);
       add(new THREE.BoxGeometry(2.8, 0.12, 3.8), mat, 0, 3.5, 0);
     } else if (d.kind === "sofa") {
-      add(new THREE.BoxGeometry(3, 0.55, 1.5), dark, 0, 0.45, 0);
-      add(new THREE.BoxGeometry(2.7, 0.5, 1.25), mat, 0, 0.9, 0);
-      add(new THREE.BoxGeometry(2.8, 1.35, 0.4), mat, 0, 1.5, 0.55);
+      const upholstery = fabric(d.color);
+      const sofaWood = wood(0x5f4031, 0.64);
+      add(new RoundedBoxGeometry(3, 0.48, 1.5, 4, 0.1), upholstery, 0, 0.5, 0);
+      for (const x of [-0.68, 0.68])
+        add(new RoundedBoxGeometry(1.28, 0.38, 1.22, 4, 0.12), upholstery, x, 0.87, -0.03);
+      add(new RoundedBoxGeometry(2.76, 1.18, 0.34, 4, 0.1), upholstery, 0, 1.48, 0.56, 0.08);
+      for (const x of [-0.68, 0.68])
+        add(new RoundedBoxGeometry(1.24, 0.82, 0.27, 4, 0.1), upholstery, x, 1.51, 0.35, 0.12, 0, -x * 0.025);
       for (const x of [-1.35, 1.35])
-        add(new THREE.BoxGeometry(0.35, 0.8, 1.35), mat, x, 0.95, 0);
+        add(new RoundedBoxGeometry(0.34, 0.78, 1.32, 4, 0.1), upholstery, x, 0.98, 0);
+      for (const x of [-1.02, 1.02])
+        for (const z of [-0.46, 0.46])
+          add(new THREE.CylinderGeometry(0.07, 0.1, 0.28, 10), sofaWood, x, 0.15, z, 0, 0, x * 0.05);
     } else if (d.kind === "sectional") {
-      add(new THREE.BoxGeometry(3.6, 0.48, 1.5), dark, 0, 0.4, 0);
-      add(new THREE.BoxGeometry(3.25, 0.48, 1.25), mat, 0, 0.86, 0);
-      add(new THREE.BoxGeometry(3.45, 1.25, 0.35), mat, 0, 1.48, 0.56);
-      add(new THREE.BoxGeometry(1.25, 0.48, 2.65), mat, 1.18, 0.86, -0.68);
+      const upholstery = fabric(d.color);
+      const sofaWood = wood(0x5f4031, 0.64);
+      add(new RoundedBoxGeometry(3.6, 0.46, 1.5, 4, 0.1), upholstery, 0, 0.47, 0);
+      for (const x of [-1.04, 0, 1.04])
+        add(new RoundedBoxGeometry(0.96, 0.4, 1.2, 4, 0.11), upholstery, x, 0.84, 0);
+      add(new RoundedBoxGeometry(3.42, 1.15, 0.34, 4, 0.09), upholstery, 0, 1.46, 0.56, 0.08);
+      add(new RoundedBoxGeometry(1.2, 0.42, 2.64, 4, 0.12), upholstery, 1.18, 0.84, -0.68);
+      for (const x of [-1.04, 0, 1.04])
+        add(new RoundedBoxGeometry(0.94, 0.78, 0.27, 4, 0.09), upholstery, x, 1.48, 0.36, 0.12);
       for (const x of [-1.65, 1.65])
-        add(new THREE.BoxGeometry(0.3, 0.72, 1.3), mat, x, 0.98, 0);
+        add(new RoundedBoxGeometry(0.3, 0.72, 1.3, 4, 0.09), upholstery, x, 0.96, 0);
+      for (const x of [-1.34, 1.34])
+        for (const z of [-0.45, 0.45])
+          add(new THREE.CylinderGeometry(0.07, 0.1, 0.25, 10), sofaWood, x, 0.13, z);
     } else if (d.kind === "armchair") {
-      add(new RoundedBoxGeometry(1.65, 0.5, 1.55, 3, 0.08), dark, 0, 0.42, 0);
-      add(new RoundedBoxGeometry(1.35, 0.5, 1.25, 3, 0.1), mat, 0, 0.92, 0);
+      const upholstery = fabric(d.color);
+      add(new RoundedBoxGeometry(1.65, 0.5, 1.55, 4, 0.1), upholstery, 0, 0.42, 0);
+      add(new RoundedBoxGeometry(1.35, 0.5, 1.25, 4, 0.12), upholstery, 0, 0.92, 0);
       const armBackGeo = new RoundedBoxGeometry(1.45, 1.48, 0.38, 4, 0.1);
       armBackGeo.translate(0, 0.74, 0);
-      const armBack = add(armBackGeo, mat, 0, 1.08, 0.52, 0.16);
+      const armBack = add(armBackGeo, upholstery, 0, 1.08, 0.52, 0.16);
       armBack.userData.pivot = "seat-back-base";
       for (const x of [-0.78, 0.78])
-        add(new RoundedBoxGeometry(0.28, 0.82, 1.35, 3, 0.07), mat, x, 1, 0);
+        add(new RoundedBoxGeometry(0.28, 0.82, 1.35, 4, 0.09), upholstery, x, 1, 0);
     } else if (d.kind === "coffeetable") {
       add(new THREE.BoxGeometry(2.6, 0.2, 1.5), mat, 0, 0.78, 0);
       for (const x of [-1.05, 1.05])
@@ -5397,10 +5754,37 @@ export class Game {
         (d?.scale ?? 1)
     );
   }
+  private placeOnSupport(
+    data: ItemData,
+    group: THREE.Group,
+    support: THREE.Group,
+    x: number,
+    z: number,
+  ) {
+    const supportBounds = new THREE.Box3().setFromObject(support),
+      itemBounds = this.localBoundsAtRotation(group, data.rot),
+      margin = 0.06,
+      minX = supportBounds.min.x + margin - itemBounds.min.x,
+      maxX = supportBounds.max.x - margin - itemBounds.max.x,
+      minZ = supportBounds.min.z + margin - itemBounds.min.z,
+      maxZ = supportBounds.max.z - margin - itemBounds.max.z;
+    if (minX > maxX || minZ > maxZ) {
+      data.supportId = undefined;
+      return false;
+    }
+    data.x = THREE.MathUtils.clamp(x, minX, maxX);
+    data.z = THREE.MathUtils.clamp(z, minZ, maxZ);
+    data.y = this.supportTop(support) + 0.025 - itemBounds.min.y;
+    data.supportId = support.userData.itemId;
+    data.wallSide = undefined;
+    group.position.set(data.x, data.y, data.z);
+    return true;
+  }
   private pointerDown(e: PointerEvent) {
     if (this.firstPerson) return;
     if ((e.target as HTMLElement) !== this.canvas) return;
     if (this.placement) {
+      this.placementPointerGuardUntil = 0;
       this.updatePlacementFromPointer(e);
       this.commitPlacement();
       return;
@@ -5486,6 +5870,22 @@ export class Game {
       }
       return;
     }
+    if (this.isWallItem(d)) {
+      const wall = this.placeOnWallFromRay(d, this.selected);
+      if (wall) {
+        this.dragValid = !this.objectCollision(
+          this.selected,
+          d,
+          new Set(),
+          true,
+        );
+        this.setDragFeedback(this.dragValid);
+        const status = document.querySelector<HTMLElement>("#editor-status");
+        if (status)
+          status.textContent = `${wallSideLabel(wall.side)} · ${(d.y ?? 0).toFixed(1)} high`;
+      }
+      return;
+    }
     let support: THREE.Group | undefined;
     if (!FLOOR_ONLY_KINDS.has(d.kind)) {
       for (const h of this.ray.intersectObjects(
@@ -5511,15 +5911,13 @@ export class Game {
       const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -top);
       const hit = new THREE.Vector3();
       if (this.ray.ray.intersectPlane(plane, hit)) {
-        const p = this.clampToRoom(
+        this.placeOnSupport(
+          d,
           this.selected,
+          support,
           this.gridSnap ? Math.round(hit.x * 2) / 2 : hit.x,
           this.gridSnap ? Math.round(hit.z * 2) / 2 : hit.z,
         );
-        d.x = p.x;
-        d.z = p.z;
-        d.y = top + 0.025;
-        d.supportId = support.userData.itemId;
       }
     } else {
       const hit = new THREE.Vector3();
@@ -5557,7 +5955,10 @@ export class Game {
     if (d.supportId) ignored.add(d.supportId);
     for (const child of this.data.filter((item) => item.supportId === d.id))
       ignored.add(child.id);
-    this.dragValid = !this.objectCollision(this.selected, d, ignored);
+    const needsSupport = this.catalogFor(d)?.placement === "surface";
+    this.dragValid =
+      !this.objectCollision(this.selected, d, ignored) &&
+      (!needsSupport || Boolean(d.supportId));
     this.setDragFeedback(this.dragValid);
   }
   private pointerUp() {
@@ -5587,6 +5988,8 @@ export class Game {
   private setDragFeedback(valid: boolean, neutral = false) {
     if (!this.selected) return;
     const color = neutral ? 0xffd27a : valid ? 0x52b86d : 0xe05247;
+    if (this.selectionHelper?.material instanceof THREE.LineBasicMaterial)
+      this.selectionHelper.material.color.setHex(color);
     this.selected.traverse((object) => {
       if (
         object instanceof THREE.LineSegments &&
@@ -5604,6 +6007,12 @@ export class Game {
     );
   }
   private clearSelectionGlow() {
+    if (this.selectionHelper) {
+      this.selectionHelper.removeFromParent();
+      this.selectionHelper.geometry.dispose();
+      (this.selectionHelper.material as THREE.Material).dispose();
+      this.selectionHelper = undefined;
+    }
     if (!this.selected) return;
     const glows: THREE.LineSegments[] = [];
     this.selected.traverse((o) => {
@@ -5638,8 +6047,9 @@ export class Game {
       if (button) button.disabled = isDoor;
     }
     if (g) {
-      document.querySelector("#selected-name")!.textContent =
-        selectedData?.name ?? g.name;
+      document.querySelector("#selected-name")!.textContent = selectedData
+        ? `${selectedData.name}${selectedData.wallSide ? ` · ${wallSideLabel(selectedData.wallSide)}` : ""} · ${(selectedData.y ?? 0).toFixed(1)} high`
+        : g.name;
       const colorInput = document.querySelector<HTMLInputElement>("#color");
       if (colorInput && selectedData)
         colorInput.value = `#${new THREE.Color(selectedData.color).getHexString()}`;
@@ -5651,24 +6061,21 @@ export class Game {
         const m = mesh.material as THREE.MeshStandardMaterial;
         if (m.emissive) {
           m.emissive.setHex(0x7a3e12);
-          m.emissiveIntensity = 0.28;
+          m.emissiveIntensity = 0.16;
         }
-        const outline = new THREE.LineSegments(
-          new THREE.EdgesGeometry(mesh.geometry, 28),
-          new THREE.LineBasicMaterial({
-            color: 0xffd27a,
-            transparent: true,
-            opacity: 0.8,
-            depthTest: false,
-            blending: THREE.AdditiveBlending,
-            toneMapped: false,
-          }),
-        );
-        outline.userData.selectionGlow = true;
-        outline.renderOrder = 999;
-        outline.scale.setScalar(1.018);
-        mesh.add(outline);
       }
+      this.selectionHelper = new THREE.BoxHelper(g, 0xffd27a);
+      this.selectionHelper.name = "selection-outline";
+      this.selectionHelper.userData.selectionGlow = true;
+      this.selectionHelper.renderOrder = 999;
+      this.selectionHelper.raycast = () => undefined;
+      if (this.selectionHelper.material instanceof THREE.LineBasicMaterial) {
+        this.selectionHelper.material.transparent = true;
+        this.selectionHelper.material.opacity = 0.72;
+        this.selectionHelper.material.depthTest = false;
+        this.selectionHelper.material.toneMapped = false;
+      }
+      this.scene.add(this.selectionHelper);
     }
     this.syncObjectManagerSelection();
   }
@@ -5706,6 +6113,10 @@ export class Game {
       this.syncArchitecturalExtension(d);
       return;
     }
+    if (this.isWallItem(d)) {
+      this.placeOnNearestWall(d, this.selected, d.x, d.z, d.y);
+      return;
+    }
     const oldX = d.x,
       oldZ = d.z,
       p = this.clampToRoom(this.selected, d.x, d.z),
@@ -5728,8 +6139,8 @@ export class Game {
     const d = this.findData();
     if (!d || !this.selected) return;
     if (d.locked) return this.announce(`${this.objectLabel(d)} is locked.`);
-    this.checkpoint();
     if (ARCHITECTURAL_KINDS.has(d.kind)) {
+      this.checkpoint();
       const oldX = d.x,
         oldZ = d.z,
         oldRoom = this.extensionRect(d),
@@ -5768,7 +6179,31 @@ export class Game {
       this.changed();
       return;
     }
-    d.rot += n;
+    if (this.isWallItem(d)) {
+      this.announce(
+        `${this.objectLabel(d)} stays facing the room. Drag it onto another wall to turn it.`,
+      );
+      return;
+    }
+
+    // Test the turn at the object's current position before committing it. Using
+    // keepSelectedInRoom() here used to clamp the rotated bounds back into the
+    // room, silently changing x/z a little on every turn near a wall.
+    const nextRotation = d.rot + n;
+    this.selected.rotation.y = nextRotation;
+    const allowed = this.placementPoint(this.selected, d.x, d.z),
+      fitsAtCurrentPosition =
+        Boolean(allowed) &&
+        Math.abs((allowed?.x ?? d.x) - d.x) < 1e-6 &&
+        Math.abs((allowed?.z ?? d.z) - d.z) < 1e-6;
+    this.selected.rotation.y = d.rot;
+    if (!fitsAtCurrentPosition) {
+      this.announce(`Move ${this.objectLabel(d)} away from the wall to rotate it.`);
+      return;
+    }
+
+    this.checkpoint();
+    d.rot = nextRotation;
     this.selected.rotation.y = d.rot;
     if (SUPPORT_KINDS.has(d.kind)) {
       const c = Math.cos(n),
@@ -5781,7 +6216,6 @@ export class Game {
         this.items.get(child.id)?.position.set(child.x, child.y ?? 0, child.z);
       }
     }
-    this.keepSelectedInRoom();
     this.changed();
   }
   private adjustHeight(n: number) {
@@ -5796,7 +6230,10 @@ export class Game {
     this.checkpoint();
     d.y = nextY;
     d.supportId = undefined;
-    this.selected.position.y = d.y;
+    if (this.isWallItem(d))
+      this.placeOnNearestWall(d, this.selected, d.x, d.z, nextY);
+    else
+      this.selected.position.y = d.y;
     if (SUPPORT_KINDS.has(d.kind)) {
       for (const child of this.data.filter((x) => x.supportId === d.id)) {
         child.y = THREE.MathUtils.clamp((child.y ?? 0) + delta, 0, 6);
@@ -5804,7 +6241,7 @@ export class Game {
       }
     }
     document.querySelector("#selected-name")!.textContent =
-      `${d.name} · ${d.y.toFixed(1)} high`;
+      `${d.name}${d.wallSide ? ` · ${wallSideLabel(d.wallSide)}` : ""} · ${d.y.toFixed(1)} high`;
     this.audio("place");
     this.changed();
   }
@@ -6894,6 +7331,12 @@ export class Game {
       this.lampLight.color.setHex(mood.lampColor);
       this.lampLight.intensity = mood.lampIntensity;
     }
+    this.scene.traverse((object) => {
+      if (object instanceof THREE.PointLight && object.userData.cozyPractical) {
+        object.color.setHex(mood.lampColor);
+        object.intensity = mood.lampIntensity * 0.32;
+      }
+    });
     this.renderer.toneMappingExposure = mood.exposure;
     if (this.dust?.material instanceof THREE.PointsMaterial) {
       this.dust.material.color.setHex(mood.dustColor);
@@ -6925,9 +7368,18 @@ export class Game {
     if (this.compactToolsQuery.matches)
       this.surfaces.close("secondary-actions", false);
     this.select(undefined);
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+      // Backgrounded or overloaded browsers may throttle rAF indefinitely.
+      // Photo capture should still respond to the user's click.
+      window.setTimeout(finish, 120);
+    });
     await this.playCameraEffect();
     await this.capturePhoto();
     this.surfaces.open(
@@ -6941,11 +7393,12 @@ export class Game {
     document.querySelector<HTMLButtonElement>("#close-photo")?.focus();
   }
   private async playCameraEffect() {
+    const shutter = document.querySelector<HTMLElement>("#camera-shutter")!;
+    shutter.dataset.firedAt = String(performance.now());
     if (this.settings.value.reducedMotion) {
       this.audio("camera");
       return;
     }
-    const shutter = document.querySelector<HTMLElement>("#camera-shutter")!;
     shutter.classList.remove("firing");
     void shutter.offsetWidth;
     shutter.classList.add("firing");
@@ -7790,6 +8243,9 @@ export class Game {
       this.controls.update();
     }
     this.updateRoomWallTransparency();
+    this.selectionHelper?.update();
+    if (this.selectionHelper?.material instanceof THREE.LineBasicMaterial)
+      this.selectionHelper.material.opacity = 0.58 + (Math.sin(e * 4) + 1) * 0.12;
     if (this.dust) {
       this.dust.rotation.y = e * 0.015;
       this.dust.position.y = Math.sin(e * 0.2) * 0.04;
@@ -7891,7 +8347,11 @@ export class Game {
               kind: this.placement.data.kind,
               valid: this.placement.valid,
               x: this.placement.data.x,
+              y: this.placement.data.y ?? 0,
               z: this.placement.data.z,
+              surface: this.placement.catalog.placement ?? "floor",
+              wallSide: this.placement.data.wallSide ?? null,
+              supportId: this.placement.data.supportId ?? null,
             }
           : null,
         objects: this.diagnosticsObjects,
@@ -7934,6 +8394,8 @@ export class Game {
         position: { x: item.x, y: item.y ?? 0, z: item.z },
         rotation: item.rot,
         scale: item.scale ?? 1,
+        supportId: item.supportId ?? null,
+        wallSide: item.wallSide ?? null,
         locked: Boolean(item.locked),
         hidden: Boolean(item.hidden),
       })),
