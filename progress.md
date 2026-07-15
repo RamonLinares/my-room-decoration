@@ -27,3 +27,39 @@ Original prompt: Build and deploy a polished, playable “My Room decoration” 
 - Final runtime sample: high quality, 0.70 ms p50 / 1.10 ms p95 / 1.60 ms p99 frame work, 20 collision cells, nonblank canvas, four wall diagnostics (`back=1`, `left=1`, `front=0`, `right=0`), and no console or page errors.
 - Release evidence and the ten-category before/after visual scorecard are recorded in `gaming_xp_release_report.md`.
 - Hardened the Pages verification path after independent GitHub runner feedback: production keeps `/my-room-decoration/`, CI's Vite development server stays at `/`, the browser harness resolves consistently, 200% text controls retain a safe viewport inset, and readiness assertions follow actual editor/Walk transitions without relaxing gameplay or performance thresholds.
+
+## Professional UI redesign (2026-07-15)
+
+- Rebuilt the editor chrome from the supplied design reference: compact room identity card, restrained top-right history/audio controls, dark toy-chest masthead, cream inventory body, raised mode tabs, and a slimmer bottom dock.
+- Compressed catalog discovery into a single search/filter row with horizontally scannable categories and curated collections, preserving every existing filter and keyboard interaction.
+- Reworked catalog entries into dense two-column visual cards with thumbnail, title, note, favorite, preview cue, and primary Place cue. The 3D room remains visually dominant at laptop dimensions.
+- Tuned short desktop viewports so four complete product cards remain visible at 1280×720; taller laptop viewports use larger product imagery and reveal six or more entries.
+- Responsive and interaction verification now passes across desktop Chrome and mobile Safari emulation, including compact landscape, 200% text, reduced motion, forced colors, keyboard management, catalog filtering, placement, cancel, commit, and undo.
+- Corrected catalog card alignment inherited from the former flex layout: the grid now owns a full-width column, removing the large phantom left inset from thumbnails, titles, notes, and actions.
+- Promoted Rotate, Height, and Size into compact grouped selection controls; More now contains only color, duplicate, camera, wall alignment, and removal actions.
+- Added Lower/Raise controls directly to placement preview with a live height value and R/F shortcuts, allowing shelves and other objects to clear existing wall/floor arrangements before committing.
+- Verified the streamlined controls across desktop and mobile Safari emulation: 20 targeted placement, responsive, keyboard, 200%-text, and accessibility tests pass with no UI overflow or console errors.
+- Fixed repeated rotation drift near room edges. Rotations now preserve the object's exact x/z center; a turn whose rotated footprint would cross a wall is refused with guidance instead of silently clamping and moving the object. Added a 24-turn regression for the Double glass cabinet on desktop and mobile.
+
+## Ant visual-gap closure (2026-07-15)
+
+- Added a shared cozy material library with authored woven upholstery and tintable procedural wood. The 1K fabric source is shipped as a 52 kB WebP and loads progressively after the welcome screen so visual polish does not compete with LCP.
+- Rebuilt the most visible foundational props—bed, desk, chair, lamp, teddy, books, sofa, sectional, and armchair—with rounded silhouettes, layered construction, recognizable details, coherent fabric/wood response, and practical lamp glow.
+- Rebalanced all four lighting moods around a lower ambient floor, stronger directionality, softer PCF shadows, restrained exposure, and local lamp light. The default camera moved from 36° to 40° for a more natural dollhouse perspective.
+- Recompressed desktop chrome around the canvas: the identity card is 326×69, catalog is ~310 px wide (19% of a 1440×900 viewport), eight catalog cards are visible, and the dock is 328 px wide. Mobile retains 44 px targets and a full-width bottom dock without covering the room.
+- Replaced per-submesh selection scribbles with one calm object-level outline and lighter emissive feedback. Rotate, Height, and Size remain immediately visible.
+- Made automatic placement search the actual room grid in both primary orientations, preventing tall furniture and shelves from opening on top of the teddy in furnished rooms.
+- Kept visual detail inside the original production envelope by concentrating geometry at silhouettes: final default-room diagnostics are 100 calls, 5,242 triangles, 101 geometries, 7 textures, high quality, 1.0 ms p50 / 1.5 ms p95 frame work, and no console/page errors.
+- Verification: production build and Stylelint pass; the final clean Playwright run reports `158 passed`, `6 intentional platform skips`, and `0 failed` across desktop Chrome and mobile Safari emulation. This includes render budget, throttled LCP, complete responsive matrix, desktop/mobile placement, 24-turn cabinet rotation, touch gestures, Walk/photo, the 20-capture iOS soak, and all four wall cutaway shapes.
+
+## Wall- and surface-aware placement (2026-07-15)
+
+- Replaced floor-hit “nearest rectangle edge” inference with a reusable boundary-wall solver. It removes shared interior edges in L/T/U room unions, represents inward-facing wall segments explicitly, and raycasts only walls visible to the pointer.
+- Wall-mounted objects now choose a clear slot on the longest usable boundary, face into the room, clamp within the wall span and room height, retain their wall identity when saved, and stay attached while dragged, nudged, aligned, or re-snapped after room changes.
+- Promoted the original window, frame trio, and wall bookshelf fixtures to explicit wall-placement catalog entries so they receive the same constraints as the expanded catalog and real-room wall pieces.
+- Surface props now search several usable positions across every support instead of attaching to the first support found. Pointer placement clamps the whole object footprint within the support top, ignores its host during collision checks, and rejects a drop when no valid support remains.
+- Placement feedback now names the active wall or support, and diagnostics expose placement surface, wall side, and support ID for automated verification and accessibility tooling.
+- Added regressions for shaped-room interior-edge removal, clear wall-slot selection, persisted wall attachment, and support-required surface placement on desktop and mobile.
+- Prevented the catalog-closing pointer transition from dragging a valid automatic preview onto an occupied object; deliberate canvas taps and placement moves remain immediate. Floor fallback scoring now uses exact transformed obstacle boxes, including asymmetric models.
+- Hardened photo opening for throttled/background tabs with a bounded rAF fallback and a persistent shutter-effect diagnostic marker.
+- Final verification: production build, Stylelint, diff integrity, and canvas inspection pass. The contention-free Playwright run reports `164 passed`, `6 intentional platform skips`, and `0 failed` across all 170 desktop/mobile cases. Default-room diagnostics remain at 100 calls, 5,242 triangles, 101 geometries, 7 textures, 1.1 ms p50 / 1.6 ms p95, with a nonblank canvas and no console/page errors.

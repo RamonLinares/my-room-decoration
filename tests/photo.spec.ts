@@ -19,33 +19,17 @@ test('captures the current room view with a camera shutter effect', async ({
     return rect.width / rect.height;
   });
 
-  await page.evaluate(() => {
-    (window as Window & { __shutterSeen?: boolean }).__shutterSeen = false;
-    const shutter = document.querySelector('#camera-shutter')!;
-    const observer = new MutationObserver((records) => {
-      const fired =
-        shutter.classList.contains('firing') ||
-        records.some((record) =>
-          (record.oldValue ?? '').split(/\s+/).includes('firing'),
-        );
-      if (!fired) return;
-      (window as Window & { __shutterSeen?: boolean }).__shutterSeen = true;
-      observer.disconnect();
-    });
-    observer.observe(shutter, {
-      attributes: true,
-      attributeFilter: ['class'],
-      attributeOldValue: true,
-    });
+  await page.locator('#camera-shutter').evaluate((shutter) => {
+    delete (shutter as HTMLElement).dataset.firedAt;
   });
   await clickRoomTool(page, '#open-photo');
   await expect
     .poll(() =>
-      page.evaluate(
-        () => (window as Window & { __shutterSeen?: boolean }).__shutterSeen,
+      page.locator('#camera-shutter').evaluate(
+        (shutter) => Number((shutter as HTMLElement).dataset.firedAt ?? 0),
       ),
     )
-    .toBe(true);
+    .toBeGreaterThan(0);
   await expect(page.locator('#photo-studio')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('#photo-status')).toContainText('Current view captured');
 
