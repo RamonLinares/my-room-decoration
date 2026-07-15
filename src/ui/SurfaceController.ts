@@ -201,12 +201,15 @@ export class SurfaceController {
     }
     const first = tabbables[0];
     const last = tabbables[tabbables.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
+    const current = tabbables.indexOf(document.activeElement as HTMLElement);
+    event.preventDefault();
+    if (current < 0) {
+      (event.shiftKey ? last : first).focus();
+      return;
     }
+    const next = event.shiftKey
+      ? (current - 1 + tabbables.length) % tabbables.length
+      : (current + 1) % tabbables.length;
+    tabbables[next].focus();
   }
 }
