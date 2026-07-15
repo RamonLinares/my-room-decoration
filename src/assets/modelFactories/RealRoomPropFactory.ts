@@ -419,3 +419,4 @@ export function buildRealRoomProp(root: THREE.Group, kind: string, color: number
   };
   return true;
 }
+// Visual contract: docs/art-bible.md — translate real references into the shared storybook abstraction.

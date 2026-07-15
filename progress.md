@@ -12,3 +12,17 @@ Original prompt: Build and deploy a polished, playable “My Room decoration” 
 - 2026-07-13: Converted the built-in memory rug, sunny window, picture-frame trio, and wall book shelf into ordinary catalog objects. A one-time migration adds editable versions to existing saves; they can now be selected, moved, resized, recolored, duplicated, and permanently removed without returning after reload.
 - 2026-07-13: Rebuilt Sunny window glazing with a double-sided physical clearcoat pane, luminous sky backing, and reflected highlight streaks so newly added catalog copies read as glass even away from a wall.
 - TODO: Continue checking dense-room placement as the catalog grows; consider a temporary placement silhouette if rooms become extremely full.
+
+## Gaming experience roadmap implementation (2026-07-15)
+
+- Original goal: Implement every item in `gaming_xp_roadmap.md` efficiently and completely, without shortcuts; verify locally and in production; push and deploy.
+- Completed P0 trust foundations: versioned IndexedDB My Rooms, thumbnails, archive/recovery, bounded snapshots, import safety, first-session creative victory, safe-frame camera presets, robust mobile Walk controls, accessible spatial overview, tactile placement feedback, and four-wall dollhouse cutaways.
+- Completed P1 core loop: six optional Room Stories, scrapbook capture/compare/captions, 61-kind Walk interactions, generated ambience/UI/world/footstep audio through one context owner, four smoothly blended lighting moods, an enforced art bible, comfort/readability settings, and adaptive quality for dense rooms.
+- Completed P2 depth: precision multi-edit/group/lock/measure/repeat tools, curated catalog collections and contextual discovery, six non-punitive challenge variants, safe editable share previews with ID remapping, and adaptive standard/high photo capture with context-loss fallback.
+- Kept P3 community deliberately gated as the roadmap specifies: local-first sharing is complete, while any public showcase requires a separate moderation, privacy, reporting, age-policy, and safeguarding product review.
+- Corrected the Sunday wardrobe center seam so it is recessed rather than protruding. Added four real room walls; the camera-near walls cut away cleanly while far walls remain fully opaque for rectangle, L, T, and U layouts.
+- Generated and integrated a storybook memory-box concept and PBR GLB. Runtime optimization reduced it from 58.06 MB / 1,023,836 uploaded vertices / 4K maps to 2.0 MB / 64,225 vertices / 1K maps.
+- Final production build: 40.01 kB HTML, 55.04 kB CSS, 687.03 kB game chunk (185.47 kB gzip), lazy 44.29 kB GLTF loader, and 242.04 kB Three.js core.
+- Final QA: `154 passed`, `6 intentional platform skips`, `0 failed` across desktop Chrome and mobile Safari emulation; 20-capture iOS-class photo soak and 100/200/500-object fixtures pass. Stylelint and `git diff --check` pass.
+- Final runtime sample: high quality, 0.70 ms p50 / 1.10 ms p95 / 1.60 ms p99 frame work, 20 collision cells, nonblank canvas, four wall diagnostics (`back=1`, `left=1`, `front=0`, `right=0`), and no console or page errors.
+- Release evidence and the ten-category before/after visual scorecard are recorded in `gaming_xp_release_report.md`.

@@ -144,6 +144,12 @@
             </label>
           </div>
           </details>
+          <div class="catalog-collections" aria-label="Curated collections">
+            <span class="room-label">Collections</span>
+            <div id="catalog-collection-list"></div>
+            <button id="catalog-surprise">✦ Surprise me</button>
+            <p id="catalog-context-note"></p>
+          </div>
           <div id="categories" aria-label="Object categories">
             <button class="active" data-cat="all" aria-pressed="true">All</button
             ><button data-cat="recent" aria-pressed="false">Recently used</button
@@ -422,6 +428,42 @@
             ×
           </button>
         </div>
+        <section class="room-library" aria-labelledby="room-library-title">
+          <div class="room-library-heading">
+            <div><span class="room-label">Saved on this device</span><h3 id="room-library-title">My Rooms</h3></div>
+            <div class="new-room-controls">
+              <label for="new-room-template">Start with</label>
+              <select id="new-room-template">
+                <option value="blank">Empty room</option>
+                <option value="furnished">Furnished starter</option>
+                <option value="story">Cozy story</option>
+              </select>
+              <button id="new-room" class="primary">＋ New room</button>
+            </div>
+          </div>
+          <div id="room-library-list" class="room-library-list" aria-live="polite"></div>
+          <details class="archived-room-drawer">
+            <summary>Recovery archive <span id="archived-room-count"></span></summary>
+            <div id="archived-room-list" class="room-library-list"></div>
+          </details>
+          <div class="room-library-tools">
+            <button id="duplicate-room">⧉ Duplicate open room</button>
+            <button id="create-snapshot">◇ Save checkpoint</button>
+          </div>
+          <details class="snapshot-drawer">
+            <summary>Earlier checkpoints</summary>
+            <div id="snapshot-list" class="snapshot-list"></div>
+          </details>
+        </section>
+        <section class="scrapbook-library" aria-labelledby="scrapbook-library-title">
+          <div class="room-library-heading">
+            <div><span class="room-label">Private on this device</span><h3 id="scrapbook-library-title">Scrapbook</h3></div>
+            <small id="scrapbook-storage"></small>
+          </div>
+          <p>Photos remember their room, story, lighting, and camera. Select two to compare.</p>
+          <div id="scrapbook-list" class="scrapbook-list"></div>
+          <div id="scrapbook-compare" class="scrapbook-compare" hidden></div>
+        </section>
         <p class="file-intro">
           Keep a portable copy of this room, including its shape, finishes,
           lighting, and every object.
@@ -438,15 +480,56 @@
             <small>Open a saved XML design</small>
           </button>
         </div>
+        <div class="share-room-actions" aria-label="Editable room sharing">
+          <span class="room-label">Editable sharing</span>
+          <button id="copy-room-link">⌁ Copy editable room link</button>
+          <button id="download-room-package">↓ Download .myroom package</button>
+          <button id="load-room-package">↑ Open .myroom package</button>
+        </div>
         <input
           id="load-xml-file"
           type="file"
           accept=".xml,application/xml,text/xml"
           hidden
         />
+        <input id="load-room-package-file" type="file" accept=".json,.myroom,application/json,application/vnd.my-little-room+json" hidden />
         <p id="file-status" role="status" aria-live="polite">
           XML files stay on your device until you choose one.
         </p>
+      </aside>
+      <aside
+        id="story-panel"
+        class="closed"
+        aria-labelledby="story-title"
+        aria-hidden="true"
+        inert
+        hidden
+      >
+        <div class="room-head">
+          <div><span class="eyebrow">OPTIONAL CREATIVE PROMPTS</span><h2 id="story-title">Room Stories</h2></div>
+          <button id="close-stories" class="panel-close" aria-label="Close Room Stories">×</button>
+        </div>
+        <p class="story-intro">A little direction when you want it. There are no timers, scores, or wrong answers.</p>
+        <section id="active-story" class="active-story" hidden>
+          <span class="room-label">Your current story</span>
+          <h3 id="active-story-title"></h3>
+          <p id="active-story-prompt"></p>
+          <div class="story-progress-head"><strong id="story-progress-count"></strong><span id="story-progress-bar" aria-hidden="true"><i></i></span></div>
+          <ol id="story-step-list"></ol>
+          <button id="leave-story">Leave this story</button>
+        </section>
+        <div id="story-list" class="story-list" aria-label="Available Room Stories"></div>
+        <section class="challenge-library" aria-labelledby="challenge-library-title">
+          <span class="room-label">Repeatable room briefs</span>
+          <h3 id="challenge-library-title">Gentle challenges</h3>
+          <p>Each challenge starts in a duplicate. Your original room stays safe.</p>
+          <div id="challenge-list" class="challenge-list"></div>
+        </section>
+        <section class="creative-keepsakes" aria-labelledby="creative-keepsakes-title">
+          <span class="room-label">Private keepsakes</span>
+          <h3 id="creative-keepsakes-title">Things you’ve discovered</h3>
+          <div id="creative-rewards"></div>
+        </section>
       </aside>
       <section id="selection" class="hidden" aria-hidden="true" inert hidden>
         <span class="selected-summary"><strong id="selected-name">Keepsake</strong><small id="selected-transform">0° · 100% · floor</small></span
@@ -461,6 +544,7 @@
             <button id="raise" aria-label="Raise selected object">↑ Raise</button>
             <label class="selected-color">Color <input id="color" type="color" aria-label="Choose selected object color" /></label>
             <button id="duplicate">Duplicate</button>
+            <button id="focus-selection">⌖ Focus camera</button>
             <button id="align-wall">Align to wall</button>
             <button id="remove" class="danger">Remove</button>
           </div>
@@ -505,15 +589,22 @@
             <strong>More room tools</strong>
             <button id="close-more" class="panel-close" aria-label="Close more room tools">×</button>
           </div>
-          <button id="open-files">⇅ Save &amp; Open</button
+          <button id="open-files">⌂ My Rooms &amp; Files</button
+          ><button id="open-stories">✦ Room Stories</button
+          ><button id="open-spatial-overview">◫ Room overview</button
+          ><button id="open-precision">⌖ Precision tools</button
           ><button id="open-photo" class="photo-button">◉ Photo</button
           ><button id="time-toggle" aria-pressed="false">☀ Lighting: Afternoon</button
           ><button id="reset-view" title="Fit the whole room in view">⌗ Reset view</button
+          ><button id="top-view" title="Look straight down at the floor plan">▣ Top view</button
+          ><button id="front-view" title="Look straight toward the back wall">▤ Front view</button
           ><button id="snap-toggle" aria-pressed="false">⌗ Grid snap: Off</button
+          ><button id="open-settings" aria-controls="settings-dialog" aria-expanded="false">⚙ Settings</button
           ><button id="open-help" aria-controls="help-dialog" aria-expanded="false">? Help</button>
         </div>
       </nav>
       <section id="walk-hud" aria-hidden="true" inert hidden>
+        <div id="walk-look-zone" aria-hidden="true"></div>
         <div class="walk-reticle" aria-hidden="true"></div>
         <div class="walk-help">
           <strong>WALK MODE</strong>
@@ -530,6 +621,8 @@
           <button data-walk="back" aria-label="Walk backward">▼</button>
           <button data-walk="right" aria-label="Walk right">▶</button>
         </div>
+        <div id="walk-move-zone" aria-label="Touch joystick for walking"><span id="walk-knob"></span></div>
+        <button id="walk-interaction" hidden>Use object</button>
         <div class="walk-zoom" aria-label="Camera position controls">
           <span>Zoom</span>
           <button id="walk-zoom-in" aria-label="Zoom in">＋</button>
@@ -540,6 +633,51 @@
         </div>
       </section>
       <div id="camera-shutter" aria-hidden="true"><span></span></div>
+      <section id="share-preview-dialog" class="closed" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="share-preview-title" inert hidden tabindex="-1">
+        <div class="share-preview-sheet">
+          <span class="eyebrow">SHARED ROOM PREVIEW</span>
+          <h2 id="share-preview-title">Open a room copy?</h2>
+          <p id="share-preview-text"></p>
+          <dl id="share-preview-details"></dl>
+          <p>Your existing rooms will not be changed.</p>
+          <div class="share-preview-actions"><button id="cancel-share-preview">Cancel</button><button id="confirm-share-preview" class="primary">Create editable copy</button></div>
+        </div>
+      </section>
+      <section id="precision-dialog" class="closed" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="precision-title" inert hidden tabindex="-1">
+        <div class="precision-sheet">
+          <div class="help-head"><div><span class="eyebrow">OPTIONAL ADVANCED EDITING</span><h2 id="precision-title">Precision tools</h2></div><button id="close-precision" class="panel-close" aria-label="Close precision tools">×</button></div>
+          <p>Select one or more objects. Locked objects stay protected; hidden objects remain in the design.</p>
+          <div id="precision-object-list" class="precision-object-list"></div>
+          <div class="precision-numbers">
+            <label>X <input id="precision-x" type="number" step="0.1" /></label><label>Y <input id="precision-y" type="number" step="0.1" /></label><label>Z <input id="precision-z" type="number" step="0.1" /></label><label>Rotation ° <input id="precision-rotation" type="number" step="1" /></label><label>Scale % <input id="precision-scale" type="number" min="1" max="1000" step="5" /></label><label>Grid <select id="precision-grid"><option value="0.05">0.05</option><option value="0.1">0.1</option><option value="0.25">0.25</option><option value="0.5">0.5</option></select></label>
+          </div>
+          <div class="precision-actions">
+            <button data-precision="apply">Apply numbers</button><button data-precision="group">Group</button><button data-precision="lock">Lock / unlock</button><button data-precision="hide">Hide / show</button><button data-precision="copy">Copy</button><button data-precision="paste">Paste</button><button data-precision="align-x">Align X</button><button data-precision="align-z">Align Z</button><button data-precision="distribute-x">Distribute X</button><button data-precision="distribute-z">Distribute Z</button><button data-precision="measure">Measure</button><button data-precision="repeat">Repeat placement</button><button data-precision="bookmark">Save camera</button>
+          </div>
+          <p id="precision-status" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+      <section id="settings-dialog" class="closed" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="settings-title" inert hidden tabindex="-1">
+        <div class="settings-sheet">
+          <div class="help-head"><div><span class="eyebrow">COMFORT &amp; ACCESS</span><h2 id="settings-title">Settings</h2></div><button id="close-settings" class="panel-close" aria-label="Close settings">×</button></div>
+          <div class="settings-grid">
+            <label>Interface size <input id="setting-ui-scale" type="range" min="0.85" max="1.35" step="0.05" /><output id="setting-ui-scale-value"></output></label>
+            <label>Text size <input id="setting-text-scale" type="range" min="0.9" max="1.6" step="0.1" /><output id="setting-text-scale-value"></output></label>
+            <label>Master volume <input id="setting-master-volume" type="range" min="0" max="1" step="0.05" /></label>
+            <label>Music volume <input id="setting-music-volume" type="range" min="0" max="1" step="0.05" /></label>
+            <label>World sounds <input id="setting-world-volume" type="range" min="0" max="1" step="0.05" /></label>
+            <label>Interface sounds <input id="setting-ui-volume" type="range" min="0" max="1" step="0.05" /></label>
+            <label class="setting-check"><input id="setting-high-contrast" type="checkbox" /> High contrast</label>
+            <label class="setting-check"><input id="setting-reduced-motion" type="checkbox" /> Reduce motion</label>
+            <label class="setting-check"><input id="setting-particles" type="checkbox" /> Gentle dust particles</label>
+            <label class="setting-check"><input id="setting-simplified-controls" type="checkbox" /> Simplified controls</label>
+            <label class="setting-check"><input id="setting-show-labels" type="checkbox" /> Always show labels</label>
+            <label class="setting-check"><input id="setting-read-aloud" type="checkbox" /> Read important feedback aloud</label>
+          </div>
+          <button id="reset-settings">Restore comfortable defaults</button>
+          <p id="settings-status" role="status" aria-live="polite">Settings save immediately on this device.</p>
+        </div>
+      </section>
       <section
         id="photo-studio"
         class="closed"
@@ -581,11 +719,15 @@
               Developing the photo…
             </p>
             <div class="photo-actions">
+              <label class="photo-quality">Quality
+                <select id="photo-quality"><option value="standard">Standard</option><option value="high">High</option></select>
+              </label>
               <button id="retake-photo">↻ Retake</button>
               <button id="download-photo">↓ Download PNG</button>
               <button id="share-photo" class="share-photo">
                 ↗ Share photo
               </button>
+              <button id="save-scrapbook">♡ Keep in scrapbook</button>
             </div>
             <small class="photo-note"
               >On phones, Share opens Instagram, Messages, and other installed
@@ -620,6 +762,27 @@
           </div>
         </div>
       </section>
+      <section
+        id="spatial-dialog"
+        class="closed"
+        role="dialog"
+        aria-modal="true"
+        aria-hidden="true"
+        aria-labelledby="spatial-title"
+        inert
+        hidden
+        tabindex="-1"
+      >
+        <div class="help-sheet spatial-sheet">
+          <div class="help-head">
+            <div><span class="eyebrow">ACCESSIBLE ROOM MAP</span><h2 id="spatial-title">What is where</h2></div>
+            <button id="close-spatial-overview" class="panel-close" aria-label="Close room overview">×</button>
+          </div>
+          <p id="spatial-summary"></p>
+          <div id="spatial-landmarks" class="spatial-grid"></div>
+          <details open><summary>Full text overview</summary><p id="spatial-text"></p></details>
+        </div>
+      </section>
       <div id="toast" role="status" aria-live="polite" aria-atomic="true">
         Saved — this room remembers.
       </div>
@@ -638,6 +801,7 @@
             recolor them—or let the afternoon light simply linger.
           </p>
           <button id="begin">Open the door</button
+          ><button id="begin-story" class="quiet-begin">Begin with a gentle story</button
           ><small>Your room saves itself as you play.</small>
         </div>
       </div>

@@ -44,7 +44,16 @@ interface ThreeGameDiagnostics {
     geometries: number;
     textures: number;
   };
+  performance: {
+    p50FrameMs: number;
+    p95FrameMs: number;
+    p99FrameMs: number;
+    qualityTier: "low" | "medium" | "high";
+    collisionCells: number;
+  };
 }
 interface Window {
   __THREE_GAME_DIAGNOSTICS__?: ThreeGameDiagnostics;
+  render_game_to_text?: () => string;
+  advanceTime?: (milliseconds: number) => void;
 }

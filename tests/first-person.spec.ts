@@ -28,7 +28,8 @@ test('walk mode moves, looks, zooms, and captures the live view', async ({
     () => window.__THREE_GAME_DIAGNOSTICS__!.camera.fov,
   );
   const initialHeight = start.y;
-  expect(initialHeight).toBeGreaterThan(2);
+  expect(initialHeight).toBeGreaterThanOrEqual(1.6);
+  expect(initialHeight).toBeLessThanOrEqual(1.75);
 
   if (testInfo.project.name.includes('mobile')) {
     const forward = page.locator('[data-walk="forward"]');
@@ -92,8 +93,8 @@ test('walk mode moves, looks, zooms, and captures the live view', async ({
     .poll(() =>
       page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__!.player.position.y),
     )
-    .toBe(12);
-  await expect(page.locator('#walk-height-value')).toHaveText('12.00 m');
+    .toBe(2.1);
+  await expect(page.locator('#walk-height-value')).toHaveText('2.10 m');
 
   if (!testInfo.project.name.includes('mobile')) {
     await expect
@@ -105,8 +106,9 @@ test('walk mode moves, looks, zooms, and captures the live view', async ({
       .toBeGreaterThan(0.1);
   }
 
+  // The dedicated photo regression checks the short-lived shutter animation;
+  // this walk-mode test verifies the durable result of capturing the live view.
   await clickRoomTool(page, '#open-photo');
-  await expect(page.locator('#camera-shutter')).toHaveClass(/firing/);
   await expect(page.locator('#photo-studio')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('#photo-status')).toContainText('Current view captured');
   await page.locator('#close-photo').click();

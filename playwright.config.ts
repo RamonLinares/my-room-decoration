@@ -2,7 +2,10 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests',
-  workers: process.env.CI ? 2 : undefined,
+  // WebGL and high-resolution photo tests are GPU-memory heavy. Two workers
+  // preserve meaningful concurrency without making results depend on the
+  // host's graphics-context eviction policy.
+  workers: 2,
   timeout: 90_000,
   expect: {
     timeout: 8_000,

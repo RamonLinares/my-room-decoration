@@ -1698,3 +1698,4 @@ export function buildExpandedProp(
 
   return root.children.length > 0;
 }
+// Visual contract: docs/art-bible.md — warm storybook proportions, softened edges, shared material families.

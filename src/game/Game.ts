@@ -31,6 +31,54 @@ import {
   buildArchitecturalExtension,
 } from "../assets/modelFactories/ArchitecturalExtensionFactory";
 import { SurfaceController } from "../ui/SurfaceController";
+import { AudioSystem } from "../systems/AudioSystem";
+import { SafeFrameCameraController } from "../systems/SafeFrameCamera";
+import { MyRoomPersistence } from "../persistence/MyRoomPersistence";
+import type { RoomRecord, ScrapbookEntry } from "../persistence/types";
+import { ROOM_STORIES, evaluateRoomStory, roomStoryById } from "./RoomStories";
+import { CreativeProgressionTracker, type CreativeReward } from "./CreativeProgression";
+import { WalkInteractionEngine, type WalkInteractionChange } from "./WalkInteractions";
+import { TouchIntentController } from "../core/TouchIntentController";
+import {
+  AdaptiveQualityManager,
+  recommendInitialQuality,
+  type QualityRecommendation,
+} from "../systems/AdaptiveQualityManager";
+import {
+  getLightingMood,
+  interpolateLightingMood,
+  nextLightingMood,
+  type LightingMood,
+  type LightingMoodId,
+  type LightingMoodSnapshot,
+} from "../data/lightingMoods";
+import { buildSpatialOverview } from "../accessibility/SpatialOverview";
+import { SettingsManager, type GameSettings } from "../settings/SettingsManager";
+import { PhotoCaptureManager, type PhotoQuality } from "../photo/PhotoCaptureManager";
+import {
+  PrecisionEditingSession,
+  PrecisionEditingError,
+  type PrecisionCommandResult,
+  type PrecisionObject,
+} from "./PrecisionEditing";
+import { CatalogDiscovery } from "./CatalogDiscovery";
+import {
+  listChallengeVariants,
+  startChallenge,
+  type StartedChallenge,
+  type ChallengeVariantId,
+} from "./ChallengeVariants";
+import {
+  createSharePackage,
+  createSharePackageDownload,
+  encodeSharePackageHash,
+  inspectSharePackageBlob,
+  inspectSharePackageHash,
+  remapSharePackageIds,
+  type SharePackage,
+  type SharePackagePreview,
+} from "../persistence/SharePackageCodec";
+import { archiveRoomRecord, restoreRoomRecord } from "../persistence/RoomRecovery";
 
 type Category =
   | "beds"
@@ -57,6 +105,10 @@ type ItemData = {
   color: number;
   scale?: number;
   supportId?: string;
+  locked?: boolean;
+  hidden?: boolean;
+  groupId?: string;
+  layerId?: string;
 };
 type CatalogItem = {
   kind: string;
@@ -90,8 +142,18 @@ type ImportedDesign = {
   wallStyle: WallFinishStyle;
   floorStyle: FloorFinishStyle;
   evening: boolean;
+  lightingMood?: LightingMoodId;
   muted: boolean;
   items: ItemData[];
+  story?: {
+    activeId?: string;
+    enteredWalk: boolean;
+    lookedAround?: boolean;
+    photoCount: number;
+    editedObject: boolean;
+  };
+  walkInteractions?: unknown;
+  progression?: unknown;
 };
 
 const CATALOG: CatalogItem[] = [
@@ -383,6 +445,14 @@ const CATALOG: CatalogItem[] = [
     note: "Turn the little key",
   },
   {
+    kind: "storybookbox",
+    name: "Storybook memory box",
+    category: "keepsake",
+    icon: "🌙",
+    note: "A handmade chest of little wonders",
+    placement: "surface",
+  },
+  {
     kind: "snowglobe",
     name: "Snow globe",
     category: "keepsake",
@@ -580,6 +650,7 @@ export class Game {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
   private controls: OrbitControls;
+  private focusCamera: SafeFrameCameraController;
   private loop = new Loop(
     (d, e) => this.update(d, e),
     () => this.renderer.render(this.scene, this.camera),
@@ -607,6 +678,15 @@ export class Game {
   };
   private floorTex?: THREE.Texture;
   private evening = false;
+  private lightingMood: LightingMoodId = "afternoon";
+  private lightingTransition?: {
+    from: LightingMoodId;
+    to: LightingMoodId;
+    elapsedMs: number;
+    durationMs: number;
+  };
+  private hemisphereLight?: THREE.HemisphereLight;
+  private fillLight?: THREE.DirectionalLight;
   private keyLight?: THREE.SpotLight;
   private lampLight?: THREE.PointLight;
   private dust?: THREE.Points;
@@ -614,6 +694,7 @@ export class Game {
   private roomWalls: Array<{
     side: RoomWallSide;
     outwardNormal: THREE.Vector3;
+    group: THREE.Group;
     materials: THREE.Material[];
     opacity: number;
   }> = [];
@@ -631,17 +712,44 @@ export class Game {
   private roomFloorStyle: FloorFinishStyle = "planks";
   private roomName = "A room of your own";
   private muted = false;
+  private readonly sound = new AudioSystem();
+  private readonly settings = new SettingsManager({
+    systemPreferences: {
+      reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      highContrast: matchMedia("(prefers-contrast: more)").matches,
+    },
+  });
+  private readonly photoCapture = new PhotoCaptureManager({
+    storageEstimate: async () => navigator.storage?.estimate?.() ?? {},
+  });
+  private quality: AdaptiveQualityManager;
+  private readonly persistence = new MyRoomPersistence({
+    snapshotLimitPerRoom: 20,
+    onIssue: (issue) => this.handlePersistenceIssue(issue.message),
+  });
+  private currentRoom?: RoomRecord;
+  private roomRecords: RoomRecord[] = [];
+  private activeStoryId?: string;
+  private storyMilestones = { lookedAround: false, enteredWalk: false, photoCount: 0, editedObject: false };
+  private readonly walkInteractions = new WalkInteractionEngine();
+  private readonly progression = new CreativeProgressionTracker({
+    onRewards: (rewards) => this.presentCreativeRewards(rewards),
+  });
   private gridSnap = false;
   private saveTimer = 0;
   private frameTimes: number[] = [];
+  private frameWorkTimes: number[] = [];
   private diagnosticsObjects: ThreeGameDiagnostics["editor"]["objects"] = [];
   private diagnosticsObjectsUpdatedAt = 0;
+  private readonly collisionGrid = new Map<string, Set<string>>();
   private readonly diagnosticsProjection = new THREE.Vector3();
   private catalogCategory: CatalogFilter = "all";
   private catalogQuery = "";
   private catalogPlacement: CatalogPlacementFilter = "all";
   private catalogSize: CatalogSizeFilter = "all";
   private catalogSort: CatalogSort = "catalog";
+  private catalogCollectionKinds?: Set<string>;
+  private catalogDiscovery?: CatalogDiscovery;
   private favoriteKinds = new Set<string>(
     JSON.parse(localStorage.getItem("my-little-room-favorites-v1") ?? "[]") as string[],
   );
@@ -651,16 +759,22 @@ export class Game {
   private catalogThumbnailRenderer?: THREE.WebGLRenderer;
   private catalogThumbnailObserver?: IntersectionObserver;
   private catalogThumbnailCache = new Map<string, string>();
+  private roomThumbnailUrls = new Map<string, string>();
+  private scrapbookUrls = new Map<string, string>();
+  private scrapbookComparison = new Set<string>();
   private photoBlob?: Blob;
   private photoUrl?: string;
   private photoCaptureId = 0;
+  private lastRoomThumbnailAt = 0;
   private firstPerson = false;
   private firstPersonYaw = 0;
   private firstPersonPitch = -0.04;
-  private firstPersonHeight = 2.15;
+  private firstPersonHeight = 1.68;
   private readonly firstPersonMinHeight = 1.2;
-  private readonly firstPersonMaxHeight = 12;
-  private readonly firstPersonHeightStep = 0.5;
+  private readonly firstPersonMaxHeight = 2.1;
+  private readonly firstPersonHeightStep = 0.15;
+  private readonly firstPersonVelocity = new THREE.Vector2();
+  private footstepDistance = 0;
   private firstPersonInputs = new Set<string>();
   private firstPersonLook?: { pointerId: number; x: number; y: number };
   private editorCameraState?: {
@@ -670,14 +784,37 @@ export class Game {
     fov: number;
   };
   private editorSelectedId?: string;
-  private ambience = new Audio(
-    `${import.meta.env.BASE_URL}assets/audio/room-memory-loop.mp3`,
-  );
+  private touchIntent?: TouchIntentController;
+  private walkTarget?: ItemData;
+  private readonly interactionLights = new Map<string, THREE.PointLight>();
+  private memoryBoxTemplate?: Promise<THREE.Group>;
+  private precision?: PrecisionEditingSession;
+  private activeChallenge?: StartedChallenge;
+  private sharePreviewResolver?: (accepted: boolean) => void;
+  private readonly handleVisibilityChange = () => {
+    if (document.hidden) this.loop.stop();
+    else this.loop.start();
+  };
   constructor(private canvas: HTMLCanvasElement) {
     this.surfaces = new SurfaceController(
       document.querySelector<HTMLElement>("#app")!,
     );
     this.renderer = createRenderer(canvas);
+    const connection = (navigator as Navigator & {
+      connection?: { saveData?: boolean };
+      deviceMemory?: number;
+    }).connection;
+    this.quality = new AdaptiveQualityManager({
+      initialTier: recommendInitialQuality({
+        devicePixelRatio: window.devicePixelRatio || 1,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemoryGb: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+        coarsePointer: matchMedia("(pointer: coarse)").matches,
+        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+        saveData: connection?.saveData,
+      }),
+      onChange: (change) => this.applyQuality(change.current),
+    });
     this.renderer.toneMappingExposure = 1.12;
     this.camera.position.set(12, 10, 15);
     this.controls = new OrbitControls(this.camera, canvas);
@@ -687,40 +824,108 @@ export class Game {
     this.controls.maxDistance = 32;
     this.controls.maxPolarAngle = Math.PI * 0.48;
     this.controls.minPolarAngle = 0.45;
+    this.focusCamera = new SafeFrameCameraController(this.camera, {
+      defaultDurationMs: 460,
+      reducedMotion: () => this.settings.value.reducedMotion,
+      onTargetChange: (target) => this.controls.target.copy(target),
+    });
+    this.controls.addEventListener("start", () => {
+      this.focusCamera.cancel();
+      if (this.activeStoryId && !this.storyMilestones.lookedAround) {
+        this.storyMilestones.lookedAround = true;
+        this.updateStoryProgress();
+        this.changed(false);
+      }
+    });
     this.loadRoomSettings();
+    this.sound.setMuted(this.muted);
     this.createWorld();
+    this.settings.subscribe((value) => this.applyGameSettings(value));
+    this.applyQuality(this.quality.recommendation);
     this.bindUI();
     this.bindTouchExtras();
     this.load();
     resizeRenderer(this.renderer, this.camera, 1.7);
     this.publish();
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    window.render_game_to_text = () => this.renderGameToText();
+    window.advanceTime = (milliseconds) => {
+      const steps = Math.max(1, Math.min(600, Math.round(milliseconds / (1000 / 60))));
+      for (let step = 0; step < steps; step += 1)
+        this.update(1 / 60, performance.now() / 1000 + step / 60);
+      this.renderer.render(this.scene, this.camera);
+    };
   }
   start() {
-    this.loop.start();
+    if (!document.hidden) this.loop.start();
+  }
+  async initialize() {
+    try {
+      await this.persistence.open();
+      const migration = await this.persistence.migrateLegacyLocalStorage();
+      this.persistence.installPagehideFlush();
+      this.roomRecords = await this.persistence.listRooms({ includeArchived: true });
+      const preferredId = localStorage.getItem("my-little-room-current-id");
+      const availableRooms = this.roomRecords.filter((room) => !room.archived);
+      const preferred = availableRooms.find((room) => room.id === preferredId) ??
+        availableRooms.find((room) => room.id === migration.roomId) ??
+        availableRooms[0];
+      if (preferred) {
+        this.currentRoom = preferred;
+        this.applyPersistedDesign(preferred.design);
+        this.roomName = preferred.name;
+      } else {
+        this.currentRoom = await this.persistence.createRoom({
+          name: this.roomName,
+          design: this.currentDesign(),
+        });
+        this.roomRecords = [this.currentRoom];
+      }
+      localStorage.setItem("my-little-room-current-id", this.currentRoom.id);
+      this.syncRoomNameControl();
+      this.syncRoomControls();
+      this.renderRoomLibrary();
+      await this.ensureCurrentRoomThumbnail();
+      await this.importSharedRoomFromHash();
+      this.syncSpatialOverview();
+      this.setSaveState("Saved", "saved");
+    } catch (error) {
+      console.warn("Durable room storage is unavailable; local backup remains active.", error);
+      this.setSaveState("Saved locally", "saved");
+    }
   }
   dispose() {
     this.loop.stop();
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+    void this.sound.dispose();
+    this.touchIntent?.dispose();
     this.controls.dispose();
     this.renderer.dispose();
     this.catalogThumbnailObserver?.disconnect();
     this.catalogThumbnailRenderer?.dispose();
+    this.roomThumbnailUrls.forEach((url) => URL.revokeObjectURL(url));
+    this.scrapbookUrls.forEach((url) => URL.revokeObjectURL(url));
     if (this.photoUrl) URL.revokeObjectURL(this.photoUrl);
     clearTimeout(this.saveTimer);
+    void this.persistence.flushPendingWrites();
+    this.persistence.close();
+    delete window.render_game_to_text;
+    delete window.advanceTime;
   }
   private createWorld() {
     this.scene.background = new THREE.Color(0x9fa9a1);
     this.scene.fog = new THREE.Fog(0xb9b4a5, 24, 46);
-    const hemi = new THREE.HemisphereLight(0xc9dddf, 0x5b382b, 1.9);
-    this.scene.add(hemi);
+    this.hemisphereLight = new THREE.HemisphereLight(0xc9dddf, 0x5b382b, 1.9);
+    this.scene.add(this.hemisphereLight);
     this.keyLight = new THREE.SpotLight(0xffd69b, 80, 35, 0.65, 0.5, 1.3);
     this.keyLight.position.set(-5, 10, 6);
     this.keyLight.target.position.set(0, 0, 0);
     this.keyLight.castShadow = true;
     this.keyLight.shadow.mapSize.set(1024, 1024);
     this.scene.add(this.keyLight, this.keyLight.target);
-    const fill = new THREE.DirectionalLight(0xaed7e6, 1.6);
-    fill.position.set(8, 7, -4);
-    this.scene.add(fill);
+    this.fillLight = new THREE.DirectionalLight(0xaed7e6, 1.6);
+    this.fillLight.position.set(8, 7, -4);
+    this.scene.add(this.fillLight);
     this.lampLight = new THREE.PointLight(0xffa94e, 5, 10, 2);
     this.lampLight.position.set(-4, 4, -3);
     this.scene.add(this.lampLight);
@@ -1019,6 +1224,7 @@ export class Game {
       this.roomWalls.push({
         side,
         outwardNormal,
+        group,
         materials: [wallMaterial, baseMaterial],
         opacity: 1,
       });
@@ -1220,18 +1426,14 @@ export class Game {
       this.wallViewDirection.normalize();
 
     for (const wall of this.roomWalls) {
-      const cameraOnOutside = this.firstPerson
-        ? 0
-        : THREE.MathUtils.smoothstep(
-            wall.outwardNormal.dot(this.wallViewDirection),
-            0.08,
-            0.32,
-          );
-      const opacity = THREE.MathUtils.lerp(1, 0.06, cameraOnOutside);
-      wall.opacity = opacity;
+      const cameraOnOutside =
+        !this.firstPerson &&
+        wall.outwardNormal.dot(this.wallViewDirection) > 0.16;
+      wall.opacity = cameraOnOutside ? 0 : 1;
+      wall.group.visible = !cameraOnOutside;
       for (const material of wall.materials) {
-        material.opacity = opacity;
-        material.depthWrite = opacity > 0.98;
+        material.opacity = 1;
+        material.depthWrite = true;
       }
     }
   }
@@ -1269,7 +1471,10 @@ export class Game {
       openCatalog = $("#open-catalog") as HTMLButtonElement,
       openRoom = $("#open-room") as HTMLButtonElement,
       openFiles = $("#open-files") as HTMLButtonElement,
+      openStories = $("#open-stories") as HTMLButtonElement,
       openPhoto = $("#open-photo") as HTMLButtonElement,
+      openPrecision = $("#open-precision") as HTMLButtonElement,
+      openSettings = $("#open-settings") as HTMLButtonElement,
       openHelp = $("#open-help") as HTMLButtonElement,
       moreToggle = $("#more-toggle") as HTMLButtonElement;
     this.surfaces.register("catalog", openCatalog, {
@@ -1283,6 +1488,10 @@ export class Game {
     this.surfaces.register("file-panel", openFiles, {
       modal: () => this.compactToolsQuery.matches,
       onRequestClose: () => this.surfaces.close("file-panel"),
+    });
+    this.surfaces.register("story-panel", openStories, {
+      modal: () => this.compactToolsQuery.matches,
+      onRequestClose: () => this.surfaces.close("story-panel"),
     });
     this.surfaces.register("secondary-actions", moreToggle, {
       modal: () => this.compactToolsQuery.matches,
@@ -1304,6 +1513,22 @@ export class Game {
       modal: true,
       onRequestClose: () => this.surfaces.close("help-dialog"),
     });
+    this.surfaces.register("settings-dialog", openSettings, {
+      modal: true,
+      onRequestClose: () => this.surfaces.close("settings-dialog"),
+    });
+    this.surfaces.register("share-preview-dialog", undefined, {
+      modal: true,
+      onRequestClose: () => this.finishSharePreview(false),
+    });
+    this.surfaces.register("precision-dialog", openPrecision, {
+      modal: true,
+      onRequestClose: () => this.surfaces.close("precision-dialog"),
+    });
+    this.surfaces.register("spatial-dialog", $("#open-spatial-overview") as HTMLButtonElement, {
+      modal: true,
+      onRequestClose: () => this.surfaces.close("spatial-dialog"),
+    });
     this.surfaces.register("welcome", undefined, {
       closeClass: "gone",
       modal: true,
@@ -1312,7 +1537,7 @@ export class Game {
     const syncCompactTools = () => {
       moreToggle.hidden = false;
       this.surfaces.setPersistent("secondary-actions", false);
-      ["catalog", "room-panel", "file-panel"].forEach((id) =>
+      ["catalog", "room-panel", "file-panel", "story-panel"].forEach((id) =>
         this.surfaces.refreshModalState(id),
       );
     };
@@ -1356,6 +1581,7 @@ export class Game {
         this.roomName = this.cleanRoomName(roomNameInput.value);
         this.syncRoomNameControl();
         this.saveRoomSettings();
+        this.changed();
         this.announce(`Room renamed ${this.roomName}.`);
       }
       renameForm.hidden = true;
@@ -1397,6 +1623,17 @@ export class Game {
       this.surfaces.close("file-panel");
       this.syncSelectionSurface();
     };
+    openStories.onclick = () => {
+      this.surfaces.close("catalog", false);
+      this.surfaces.close("room-panel", false);
+      this.surfaces.close("file-panel", false);
+      if (this.compactToolsQuery.matches)
+        this.surfaces.close("secondary-actions", false);
+      this.renderStoryPanel();
+      this.surfaces.open("story-panel", $("#close-stories"));
+    };
+    $("#close-stories").onclick = () => this.surfaces.close("story-panel");
+    $("#leave-story").onclick = () => this.startStory(undefined);
     moreToggle.onclick = () => {
       this.surfaces.close("catalog", false);
       this.surfaces.close("room-panel", false);
@@ -1409,6 +1646,9 @@ export class Game {
       this.syncSelectionSurface();
     };
     $("#save-xml").onclick = () => this.saveDesignXml();
+    $("#new-room").onclick = () => void this.createNewRoom();
+    $("#duplicate-room").onclick = () => void this.duplicateCurrentRoom();
+    $("#create-snapshot").onclick = () => void this.createRoomSnapshot();
     $("#load-xml").onclick = () =>
       (document.querySelector("#load-xml-file") as HTMLInputElement).click();
     $("#load-xml-file").addEventListener("change", async (event) => {
@@ -1418,9 +1658,20 @@ export class Game {
       await this.loadDesignXml(file);
       input.value = "";
     });
+    $("#copy-room-link").onclick = () => void this.copyEditableRoomLink();
+    $("#download-room-package").onclick = () => this.downloadEditableRoomPackage();
+    $("#load-room-package").onclick = () =>
+      (document.querySelector("#load-room-package-file") as HTMLInputElement).click();
+    $("#load-room-package-file").addEventListener("change", async (event) => {
+      const input = event.currentTarget as HTMLInputElement;
+      const file = input.files?.[0];
+      if (file) await this.importRoomPackageFile(file);
+      input.value = "";
+    });
     $("#open-photo").onclick = () => void this.openPhotoStudio();
     $("#walk-photo").onclick = () => void this.openPhotoStudio();
     $("#walk-toggle").onclick = () => this.toggleFirstPerson();
+    $("#walk-interaction").onclick = () => this.useWalkTarget();
     $("#close-photo").onclick = () => this.closePhotoStudio();
     $("#photo-studio").addEventListener("click", (event) => {
       if (event.target === event.currentTarget) this.closePhotoStudio();
@@ -1428,20 +1679,47 @@ export class Game {
     $("#retake-photo").onclick = () => void this.retakePhoto();
     $("#download-photo").onclick = () => this.downloadPhoto();
     $("#share-photo").onclick = () => void this.sharePhoto();
+    $("#save-scrapbook").onclick = () => void this.savePhotoToScrapbook();
+    openSettings.onclick = () => {
+      this.surfaces.close("secondary-actions", false);
+      this.syncSettingsControls();
+      this.surfaces.open("settings-dialog", $("#close-settings"));
+    };
+    $("#close-settings").onclick = () => this.surfaces.close("settings-dialog");
+    $("#reset-settings").onclick = () => this.settings.reset();
+    this.bindSettingsControls();
+    openPrecision.onclick = () => {
+      this.surfaces.close("secondary-actions", false);
+      this.openPrecisionTools();
+    };
+    $("#close-precision").onclick = () => this.surfaces.close("precision-dialog");
+    document.querySelectorAll<HTMLButtonElement>("[data-precision]").forEach((button) => {
+      button.onclick = () => this.runPrecisionAction(button.dataset.precision ?? "");
+    });
     $("#placement-confirm").onclick = () => this.commitPlacement();
     $("#placement-cancel").onclick = () => this.cancelPlacement();
+    $("#focus-selection").onclick = () => this.focusSelectedObject();
+    $("#top-view").onclick = () => this.setCameraPreset("top");
+    $("#front-view").onclick = () => this.setCameraPreset("front");
     $("#placement-rotate").onclick = () => {
       if (!this.placement) return;
       this.placement.data.rot += Math.PI / 12;
       this.placement.group.rotation.y = this.placement.data.rot;
       this.refreshPlacementValidity();
     };
+    this.renderCatalogCollections();
+    this.renderChallengeVariants();
     openHelp.onclick = () => {
       if (this.compactToolsQuery.matches)
         this.surfaces.close("secondary-actions", false);
       this.surfaces.open("help-dialog", $("#close-help"));
     };
     $("#close-help").onclick = () => this.surfaces.close("help-dialog");
+    $("#open-spatial-overview").onclick = () => {
+      this.syncSpatialOverview();
+      this.surfaces.open("spatial-dialog", $("#close-spatial-overview"));
+    };
+    $("#close-spatial-overview").onclick = () => this.surfaces.close("spatial-dialog");
     $("#help-dialog").addEventListener("click", (event) => {
       if (event.target === event.currentTarget)
         this.surfaces.close("help-dialog");
@@ -1477,6 +1755,7 @@ export class Game {
     document.querySelectorAll<HTMLButtonElement>("[data-room]").forEach(
       (b) =>
         (b.onclick = () => {
+          this.catalogCollectionKinds = undefined;
           const sizes: Record<string, [number, number]> = {
             cozy: [12, 9],
             square: [12, 12],
@@ -1645,6 +1924,10 @@ export class Game {
         return;
       if (this.firstPerson) {
         if (e.key === "Escape") this.exitFirstPerson();
+        else if (e.code === "KeyE") {
+          this.useWalkTarget();
+          e.preventDefault();
+        }
         else if (e.code === "KeyR") {
           this.setFirstPersonHeight(
             this.firstPersonHeight + this.firstPersonHeightStep,
@@ -1720,6 +2003,7 @@ export class Game {
         floorStyle?: FloorFinishStyle;
         muted?: boolean;
         evening?: boolean;
+        lightingMood?: LightingMoodId;
         gridSnap?: boolean;
         name?: string;
       } | null;
@@ -1754,6 +2038,7 @@ export class Game {
           this.roomFloorStyle = saved.floorStyle ?? "planks";
         this.muted = saved.muted ?? false;
         this.evening = saved.evening ?? false;
+        this.lightingMood = saved.lightingMood ?? (this.evening ? "evening" : "afternoon");
         this.gridSnap = saved.gridSnap ?? false;
         this.roomName = this.cleanRoomName(saved.name ?? this.roomName);
         if (["rectangle", "l", "t", "u"].includes(saved.shape ?? ""))
@@ -1867,6 +2152,7 @@ export class Game {
         floorStyle: this.roomFloorStyle,
         muted: this.muted,
         evening: this.evening,
+        lightingMood: this.lightingMood,
         gridSnap: this.gridSnap,
         name: this.roomName,
       }),
@@ -2037,6 +2323,8 @@ export class Game {
     this.setFileStatus(`Checking ${file.name}…`);
     try {
       const design = this.parseDesignXml(await file.text());
+      if (this.currentRoom)
+        await this.persistence.createSnapshot(this.currentRoom.id, this.currentDesign(), `Before importing ${file.name}`);
       this.roomName = design.name;
       this.roomWidth = design.width;
       this.roomDepth = design.depth;
@@ -2087,13 +2375,9 @@ export class Game {
   }
   private toggleSound() {
     this.muted = !this.muted;
-    if (this.muted) {
-      this.ambience.pause();
-    } else if (document.querySelector("#welcome")?.classList.contains("gone")) {
-      this.ambience.loop = true;
-      this.ambience.volume = 0.16;
-      void this.ambience.play().catch(() => {});
-    }
+    this.sound.setMuted(this.muted);
+    if (!this.muted && document.querySelector("#welcome")?.classList.contains("gone"))
+      void this.sound.unlock().then(() => this.sound.startAmbience());
     this.syncSoundControl();
     this.saveRoomSettings();
     this.audio("chime");
@@ -2134,13 +2418,16 @@ export class Game {
     this.saveRoomSettings();
     this.changed();
   }
-  private setRoomShape(shape: RoomShape) {
+  private async setRoomShape(shape: RoomShape) {
     if (
       !["rectangle", "l", "t", "u"].includes(shape) ||
       shape === this.roomShape
     )
       return;
+    if (this.currentRoom)
+      await this.persistence.createSnapshot(this.currentRoom.id, this.currentDesign(), `Before changing to ${shape.toUpperCase()} shape`);
     this.roomShape = shape;
+    this.progression.record({ type: "shape-used", shape });
     this.clampAllToRoom();
     this.rebuildRoom();
     this.syncRoomControls();
@@ -2326,6 +2613,310 @@ export class Game {
       }
     });
   }
+  private buildCatalogDiscovery() {
+    if (this.catalogDiscovery) return this.catalogDiscovery;
+    const addedAt = Date.now();
+    this.catalogDiscovery = new CatalogDiscovery(CATALOG.map((item) => {
+      const text = `${item.kind} ${item.name} ${item.note}`.toLowerCase();
+      const tags = new Set<string>([item.category]);
+      if (item.category === "realroom") tags.add("real-room");
+      if (item.category === "plant") tags.add("plant");
+      if (item.category === "beds") tags.add("bed");
+      if (item.category === "workspace") tags.add("workspace");
+      if (/chair|sofa|seat|stool|bench/.test(text)) tags.add("seating");
+      if (/lamp|light|lantern/.test(text)) tags.add(item.placement === "wall" ? "ambient-light" : "task-light");
+      if (/book/.test(text)) tags.add("books");
+      if (/rug|pillow|blanket|canopy/.test(text)) tags.add("soft-furnishing");
+      if (/desk|table|shelf/.test(text)) tags.add("surface");
+      if (/shelf|cabinet|wardrobe|dresser|drawer|box/.test(text)) tags.add("storage");
+      if (/music|radio|record|guitar|piano/.test(text)) tags.add("music");
+      if (/wood|plant|bamboo|rattan/.test(text)) tags.add("natural");
+      if (item.category === "keepsake") tags.add("personal");
+      const size = this.catalogItemSize(item), footprint = size === "small" ? 0.55 : size === "medium" ? 1.3 : 2.8;
+      return {
+        kind: item.kind,
+        name: item.name,
+        category: item.category,
+        tags: [...tags],
+        width: footprint,
+        depth: footprint,
+        placement: item.placement ?? "floor",
+        addedAt: EXPANDED_CATALOG.some((entry) => entry.kind === item.kind) ? addedAt : addedAt - 60 * 86_400_000,
+      };
+    }));
+    return this.catalogDiscovery;
+  }
+  private renderCatalogCollections() {
+    const host = document.querySelector<HTMLElement>("#catalog-collection-list");
+    if (!host) return;
+    host.replaceChildren();
+    for (const collection of this.buildCatalogDiscovery().collections()) {
+      if (!collection.itemCount) continue;
+      const button = document.createElement("button");
+      button.textContent = `${collection.title} · ${collection.itemCount}`;
+      button.title = `${collection.description} Approximate space: ${collection.approximateSpace}.`;
+      button.onclick = () => {
+        this.catalogCollectionKinds = new Set(collection.kinds);
+        host.querySelectorAll("button").forEach((entry) => entry.classList.toggle("active", entry === button));
+        this.renderCatalog("all");
+        const note = document.querySelector<HTMLElement>("#catalog-context-note");
+        if (note) note.textContent = `${collection.description} These pieces usually need ${collection.approximateSpace} space.`;
+      };
+      host.append(button);
+    }
+    const surprise = document.querySelector<HTMLButtonElement>("#catalog-surprise");
+    if (surprise) surprise.onclick = () => {
+      const selected = this.findData();
+      const recommendation = this.buildCatalogDiscovery().surprise({
+        seed: `${Date.now()}:${this.data.length}`,
+        ...(selected && SUPPORT_KINDS.has(selected.kind) ? { selectedSurfaceKind: selected.kind } : {}),
+      });
+      const item = recommendation && CATALOG.find((entry) => entry.kind === recommendation.item.kind);
+      if (!item) return this.announce("No fitting surprise is available for this spot yet.");
+      this.startPlacement(item);
+      const note = document.querySelector<HTMLElement>("#catalog-context-note");
+      if (note) note.textContent = recommendation.reasons.join(" · ") || `${item.name} was chosen from the whole toy chest.`;
+    };
+  }
+  private precisionObjects(): PrecisionObject[] {
+    return this.data.map((item) => {
+      const group = this.items.get(item.id), size = group
+        ? new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3())
+        : new THREE.Vector3(1, 1, 1);
+      return {
+        id: item.id,
+        kind: item.kind,
+        name: item.name,
+        transform: {
+          position: { x: item.x, y: item.y ?? 0, z: item.z },
+          rotationY: item.rot,
+          scale: item.scale ?? 1,
+        },
+        dimensions: { x: Math.max(.01, size.x), y: Math.max(.01, size.y), z: Math.max(.01, size.z) },
+        locked: item.locked,
+        hidden: item.hidden,
+        groupId: item.groupId,
+        layerId: item.layerId,
+        supportId: item.supportId,
+        payload: structuredClone(item) as unknown as Record<string, unknown>,
+      };
+    });
+  }
+  private openPrecisionTools() {
+    this.precision = new PrecisionEditingSession(this.precisionObjects(), { gridIncrement: .1 });
+    if (this.selected?.userData.itemId) this.precision.select([String(this.selected.userData.itemId)]);
+    this.renderPrecisionTools();
+    this.surfaces.open("precision-dialog", document.querySelector<HTMLButtonElement>("#close-precision"));
+  }
+  private renderPrecisionTools() {
+    if (!this.precision) return;
+    const state = this.precision.getState(), host = document.querySelector<HTMLElement>("#precision-object-list");
+    if (!host) return;
+    host.replaceChildren();
+    for (const object of Object.values(state.objects)) {
+      const row = document.createElement("div"), label = document.createElement("label"), checkbox = document.createElement("input");
+      row.className = "precision-object-row";
+      checkbox.type = "checkbox";
+      checkbox.checked = state.selectedIds.includes(object.id);
+      checkbox.disabled = Boolean(object.hidden);
+      checkbox.onchange = () => {
+        const ids = new Set(this.precision!.getState().selectedIds);
+        checkbox.checked ? ids.add(object.id) : ids.delete(object.id);
+        this.precision!.select([...ids]);
+        this.renderPrecisionTools();
+      };
+      label.append(checkbox, document.createTextNode(` ${object.name}${object.locked ? " · locked" : ""}${object.hidden ? " · hidden" : ""}`));
+      row.append(label);
+      if (object.hidden) {
+        const show = document.createElement("button");
+        show.textContent = "Show";
+        show.onclick = () => this.applyPrecisionResult(this.precision!.setHidden([object.id], false));
+        row.append(show);
+      }
+      host.append(row);
+    }
+    const primary = state.objects[state.selectedIds[0]];
+    const set = (id: string, value: number) => {
+      const input = document.querySelector<HTMLInputElement>(`#${id}`);
+      if (input) input.value = primary ? String(value) : "";
+    };
+    set("precision-x", primary?.transform.position.x ?? 0);
+    set("precision-y", primary?.transform.position.y ?? 0);
+    set("precision-z", primary?.transform.position.z ?? 0);
+    set("precision-rotation", primary ? THREE.MathUtils.radToDeg(primary.transform.rotationY) : 0);
+    set("precision-scale", primary ? primary.transform.scale * 100 : 100);
+    const grid = document.querySelector<HTMLSelectElement>("#precision-grid");
+    if (grid) grid.value = String(state.gridIncrement);
+  }
+  private applyPrecisionResult(result: PrecisionCommandResult) {
+    const before = structuredClone(this.data), state = result.state;
+    this.data = Object.values(state.objects).flatMap((object): ItemData[] => {
+      const source = object.payload as Partial<ItemData>;
+      if (!CATALOG.some((entry) => entry.kind === object.kind)) return [];
+      return [{
+        id: object.id,
+        kind: object.kind,
+        name: object.name,
+        category: (source.category ?? "decor") as Category,
+        color: Number(source.color) || 0xd8b58c,
+        x: object.transform.position.x,
+        y: object.transform.position.y,
+        z: object.transform.position.z,
+        rot: object.transform.rotationY,
+        scale: object.transform.scale,
+        supportId: object.supportId,
+        locked: object.locked,
+        hidden: object.hidden,
+        groupId: object.groupId,
+        layerId: object.layerId,
+      }];
+    });
+    this.history.push(before);
+    this.future = [];
+    this.rebuild();
+    this.changed();
+    this.renderPrecisionTools();
+    this.setPrecisionStatus(`${result.label} · ${result.affectedIds.length} object${result.affectedIds.length === 1 ? "" : "s"}`);
+  }
+  private runPrecisionAction(action: string) {
+    if (!this.precision) return;
+    try {
+      const state = this.precision.getState(), ids = state.selectedIds, primary = state.objects[ids[0]];
+      let result: PrecisionCommandResult | undefined;
+      if (action === "apply" && primary) {
+        const number = (id: string) => Number(document.querySelector<HTMLInputElement>(`#${id}`)?.value);
+        result = this.precision.setNumericTransform(primary.id, {
+          position: { x: number("precision-x"), y: number("precision-y"), z: number("precision-z") },
+          rotationY: THREE.MathUtils.degToRad(number("precision-rotation")),
+          scale: number("precision-scale") / 100,
+        });
+      } else if (action === "group") result = this.precision.createGroup(window.prompt("Group name", "Room group") ?? "Room group");
+      else if (action === "lock") result = this.precision.setLocked(ids, !ids.every((id) => state.objects[id].locked));
+      else if (action === "hide") result = this.precision.setHidden(ids, true);
+      else if (action === "copy") {
+        this.precision.copySelection();
+        this.setPrecisionStatus("Copied. You can paste safely with remapped object links.");
+      } else if (action === "paste") result = this.precision.paste();
+      else if (action === "align-x") result = this.precision.alignSelection("x");
+      else if (action === "align-z") result = this.precision.alignSelection("z");
+      else if (action === "distribute-x") result = this.precision.distributeSelection("x");
+      else if (action === "distribute-z") result = this.precision.distributeSelection("z");
+      else if (action === "measure") {
+        if (ids.length < 2) throw new PrecisionEditingError("too-few-objects", "Select two objects to measure between them.");
+        const a = state.objects[ids[0]].transform.position, b = state.objects[ids[1]].transform.position;
+        this.setPrecisionStatus(this.precision.measure(a, b).label);
+      } else if (action === "repeat") {
+        this.precision.beginRepeatPlacement();
+        result = this.precision.repeatPlacement({ x: state.gridIncrement * 4, z: state.gridIncrement * 4 });
+      } else if (action === "bookmark") {
+        const name = window.prompt("Saved view name", "My view") ?? "My view";
+        result = this.precision.addCameraBookmark(name, {
+          position: { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z },
+          target: { x: this.controls.target.x, y: this.controls.target.y, z: this.controls.target.z },
+          fov: this.camera.fov,
+        });
+      }
+      const grid = Number(document.querySelector<HTMLSelectElement>("#precision-grid")?.value);
+      if (grid && grid !== this.precision.getState().gridIncrement) this.precision.setGridIncrement(grid);
+      if (result) this.applyPrecisionResult(result);
+    } catch (error) {
+      this.setPrecisionStatus(error instanceof Error ? error.message : "That precision edit could not be applied.", true);
+    }
+  }
+  private setPrecisionStatus(message: string, error = false) {
+    const status = document.querySelector<HTMLElement>("#precision-status");
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle("error", error);
+  }
+  private renderChallengeVariants() {
+    const host = document.querySelector<HTMLElement>("#challenge-list");
+    if (!host) return;
+    host.replaceChildren();
+    for (const challenge of listChallengeVariants()) {
+      const card = document.createElement("article"), title = document.createElement("strong"), copy = document.createElement("small"), button = document.createElement("button");
+      title.textContent = challenge.title;
+      copy.textContent = `${challenge.premise} ${challenge.rules.join(" ")} Reward: ${challenge.reward.title}.`;
+      button.textContent = "Start in a copy";
+      button.onclick = () => void this.startChallengeVariant(challenge.id);
+      card.append(title, copy, button);
+      host.append(card);
+    }
+    if (this.activeChallenge) {
+      const evaluation = this.activeChallenge.session.evaluate(this.challengeRoomFromCurrent());
+      const status = document.createElement("p");
+      status.className = "challenge-status";
+      status.textContent = evaluation.complete
+        ? `Challenge complete · ${evaluation.reward.title} is ready as a private cosmetic keepsake.`
+        : `${evaluation.completedConditions} of ${evaluation.totalConditions} conditions · ${evaluation.conditions.filter((condition) => !condition.complete).map((condition) => condition.message).join(" ")}`;
+      host.prepend(status);
+    }
+  }
+  private challengeRoomFromCurrent() {
+    return {
+      id: this.activeChallenge?.room.id ?? this.currentRoom?.id ?? "room",
+      name: this.roomName,
+      width: this.roomWidth,
+      depth: this.roomDepth,
+      shape: this.roomShape,
+      photoCount: this.storyMilestones.photoCount,
+      items: this.data.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        category: item.category,
+        color: item.color,
+        supportId: item.supportId,
+        semanticTags: this.precisionSemanticTags(item),
+        payload: structuredClone(item) as unknown as Record<string, unknown>,
+      })),
+    };
+  }
+  private precisionSemanticTags(item: ItemData) {
+    const text = `${item.kind} ${item.name}`.toLowerCase(), tags: string[] = [item.category];
+    if (/chair|sofa|seat|stool|bench/.test(text)) tags.push("seating");
+    if (/lamp|light|lantern/.test(text)) tags.push("light");
+    if (item.category === "plant") tags.push("plant");
+    return tags;
+  }
+  private async startChallengeVariant(id: ChallengeVariantId) {
+    if (!this.currentRoom) return;
+    const started = startChallenge(id, this.challengeRoomFromCurrent());
+    const items: ItemData[] = started.room.items.flatMap((item) => {
+      const source = item.payload as Partial<ItemData>;
+      const catalog = CATALOG.find((entry) => entry.kind === item.kind);
+      if (!catalog) return [];
+      return [{
+        id: item.id,
+        kind: item.kind,
+        name: source.name ?? catalog.name,
+        category: (source.category ?? catalog.category) as Category,
+        x: Number(source.x) || 0,
+        y: Number(source.y) || 0,
+        z: Number(source.z) || 0,
+        rot: Number(source.rot) || 0,
+        color: Number(source.color) || 0xd8b58c,
+        scale: Number(source.scale) || 1,
+        supportId: item.supportId,
+      }];
+    });
+    const design: ImportedDesign = {
+      ...this.currentDesign(),
+      name: started.room.name,
+      width: started.room.width,
+      depth: started.room.depth,
+      shape: started.room.shape,
+      items,
+      story: undefined,
+      walkInteractions: undefined,
+    };
+    const room = await this.persistence.createRoom({ name: design.name, design });
+    this.roomRecords.unshift(room);
+    await this.openRoomRecord(room.id);
+    this.activeChallenge = started;
+    this.renderChallengeVariants();
+    this.surfaces.close("story-panel");
+    this.announce(`${started.introduction.title}. ${started.introduction.premise} Your original room is unchanged.`);
+  }
   private renderCatalog(cat: CatalogFilter) {
     this.catalogCategory = cat;
     const host = document.querySelector<HTMLElement>("#items")!;
@@ -2335,6 +2926,7 @@ export class Game {
       const haystack =
         `${x.name} ${x.note} ${x.kind} ${x.category}`.toLowerCase();
       return (
+        (!this.catalogCollectionKinds || this.catalogCollectionKinds.has(x.kind)) &&
         (cat === "all" ||
           (cat === "recent" && this.recentKinds.includes(x.kind)) ||
           (cat === "favorites" && this.favoriteKinds.has(x.kind)) ||
@@ -2554,6 +3146,86 @@ export class Game {
     if (!status) return;
     status.textContent = "";
     requestAnimationFrame(() => (status.textContent = message));
+    if (this.settings.value.readAloud && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(message);
+      utterance.rate = 0.92;
+      utterance.volume = this.settings.value.masterVolume;
+      window.speechSynthesis.speak(utterance);
+    }
+  }
+  private applyGameSettings(value: Readonly<GameSettings>) {
+    const root = document.documentElement;
+    root.style.setProperty("--user-ui-scale", String(value.uiScale));
+    root.style.setProperty("--user-text-scale", String(value.textScale));
+    document.body.classList.toggle("high-contrast", value.highContrast);
+    document.body.classList.toggle("reduced-motion", value.reducedMotion);
+    document.body.classList.toggle("simplified-controls", value.simplifiedControls);
+    document.body.classList.toggle("always-labels", value.showLabels);
+    this.dust && (this.dust.visible = value.particles && !value.reducedMotion);
+    this.sound.setMasterVolume(value.masterVolume);
+    this.sound.setBusVolume("ambience", value.musicVolume);
+    this.sound.setBusVolume("world", value.worldVolume);
+    this.sound.setBusVolume("ui", value.uiVolume);
+    this.syncSettingsControls();
+  }
+  private bindSettingsControls() {
+    const ranges: Array<[string, keyof GameSettings]> = [
+      ["setting-ui-scale", "uiScale"],
+      ["setting-text-scale", "textScale"],
+      ["setting-master-volume", "masterVolume"],
+      ["setting-music-volume", "musicVolume"],
+      ["setting-world-volume", "worldVolume"],
+      ["setting-ui-volume", "uiVolume"],
+    ];
+    for (const [id, key] of ranges) {
+      const input = document.querySelector<HTMLInputElement>(`#${id}`);
+      if (input) input.oninput = () => this.settings.patch({ [key]: Number(input.value) } as Partial<GameSettings>);
+    }
+    const checks: Array<[string, keyof GameSettings]> = [
+      ["setting-high-contrast", "highContrast"],
+      ["setting-reduced-motion", "reducedMotion"],
+      ["setting-particles", "particles"],
+      ["setting-simplified-controls", "simplifiedControls"],
+      ["setting-show-labels", "showLabels"],
+      ["setting-read-aloud", "readAloud"],
+    ];
+    for (const [id, key] of checks) {
+      const input = document.querySelector<HTMLInputElement>(`#${id}`);
+      if (input) input.onchange = () => this.settings.patch({ [key]: input.checked } as Partial<GameSettings>);
+    }
+    this.syncSettingsControls();
+  }
+  private syncSettingsControls() {
+    const value = this.settings.value;
+    const setRange = (id: string, current: number) => {
+      const input = document.querySelector<HTMLInputElement>(`#${id}`);
+      if (input) input.value = String(current);
+    };
+    setRange("setting-ui-scale", value.uiScale);
+    setRange("setting-text-scale", value.textScale);
+    setRange("setting-master-volume", value.masterVolume);
+    setRange("setting-music-volume", value.musicVolume);
+    setRange("setting-world-volume", value.worldVolume);
+    setRange("setting-ui-volume", value.uiVolume);
+    const setCheck = (id: string, checked: boolean) => {
+      const input = document.querySelector<HTMLInputElement>(`#${id}`);
+      if (input) input.checked = checked;
+    };
+    setCheck("setting-high-contrast", value.highContrast);
+    setCheck("setting-reduced-motion", value.reducedMotion);
+    setCheck("setting-particles", value.particles);
+    setCheck("setting-simplified-controls", value.simplifiedControls);
+    setCheck("setting-show-labels", value.showLabels);
+    setCheck("setting-read-aloud", value.readAloud);
+    const uiOutput = document.querySelector<HTMLOutputElement>("#setting-ui-scale-value"),
+      textOutput = document.querySelector<HTMLOutputElement>("#setting-text-scale-value");
+    if (uiOutput) uiOutput.textContent = `${Math.round(value.uiScale * 100)}%`;
+    if (textOutput) textOutput.textContent = `${Math.round(value.textScale * 100)}%`;
+    const status = document.querySelector<HTMLElement>("#settings-status");
+    if (status) status.textContent = this.settings.getDiagnostics().persistence === "storage-error"
+      ? "Settings are active, but this browser could not save them."
+      : "Settings save immediately on this device.";
   }
   private objectLabel(data: ItemData) {
     const peers = this.data.filter((item) => item.name === data.name),
@@ -2644,6 +3316,7 @@ export class Game {
   private nudgeSelected(dx: number, dz: number) {
     const data = this.findData();
     if (!data || !this.selected) return;
+    if (data.locked) return this.announce(`${this.objectLabel(data)} is locked.`);
     const oldX = data.x,
       oldZ = data.z;
     this.checkpoint();
@@ -2880,13 +3553,13 @@ export class Game {
         data.supportId = support.userData.itemId;
         group.position.set(data.x, data.y, data.z);
       } else {
-        const spot = this.findOpenFloorSpot(group);
+        const spot = this.findOpenFloorSpot(group, data);
         data.x = spot.x;
         data.z = spot.z;
         group.position.set(data.x, data.y ?? 0, data.z);
       }
     } else {
-      const spot = this.findOpenFloorSpot(group);
+      const spot = this.findOpenFloorSpot(group, data);
       data.x = spot.x;
       data.z = spot.z;
       group.position.set(data.x, data.y ?? 0, data.z);
@@ -2909,10 +3582,16 @@ export class Game {
     group: THREE.Group,
     data: ItemData,
     ignoredIds = new Set<string>(),
+    exhaustive = false,
   ) {
     if (["memoryrug", "roundrug"].includes(data.kind)) return false;
     const candidate = new THREE.Box3().setFromObject(group).expandByScalar(-0.06);
-    for (const [id, other] of this.items) {
+    const nearbyIds = exhaustive
+      ? new Set(this.items.keys())
+      : this.collisionCandidates(candidate);
+    for (const id of nearbyIds) {
+      const other = this.items.get(id);
+      if (!other) continue;
       if (id === data.id || ignoredIds.has(id)) continue;
       const otherData = this.data.find((item) => item.id === id),
         otherCatalog = otherData
@@ -2926,9 +3605,64 @@ export class Game {
       )
         continue;
       const otherBox = new THREE.Box3().setFromObject(other).expandByScalar(-0.06);
-      if (candidate.intersectsBox(otherBox)) return true;
+      if (candidate.intersectsBox(otherBox) && this.orientedFootprintsOverlap(group, other)) return otherData;
     }
-    return false;
+    return undefined;
+  }
+  private collisionCandidates(box: THREE.Box3) {
+    if (!this.collisionGrid.size) return new Set(this.items.keys());
+    const ids = new Set<string>(), size = 3;
+    for (let x = Math.floor(box.min.x / size); x <= Math.floor(box.max.x / size); x += 1)
+      for (let z = Math.floor(box.min.z / size); z <= Math.floor(box.max.z / size); z += 1)
+        this.collisionGrid.get(`${x}:${z}`)?.forEach((id) => ids.add(id));
+    return ids;
+  }
+  private rebuildCollisionGrid() {
+    this.collisionGrid.clear();
+    const size = 3;
+    for (const [id, group] of this.items) {
+      if (!group.visible) continue;
+      const box = new THREE.Box3().setFromObject(group);
+      for (let x = Math.floor(box.min.x / size); x <= Math.floor(box.max.x / size); x += 1)
+        for (let z = Math.floor(box.min.z / size); z <= Math.floor(box.max.z / size); z += 1) {
+          const key = `${x}:${z}`, cell = this.collisionGrid.get(key) ?? new Set<string>();
+          cell.add(id);
+          this.collisionGrid.set(key, cell);
+        }
+    }
+  }
+  private orientedFootprintsOverlap(a: THREE.Group, b: THREE.Group) {
+    const footprint = (group: THREE.Group) => {
+      const cached = group.userData.footprint as { width: number; depth: number } | undefined;
+      if (cached) return cached;
+      const rotation = group.rotation.y;
+      group.rotation.y = 0;
+      group.updateMatrixWorld(true);
+      const size = new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3());
+      group.rotation.y = rotation;
+      group.updateMatrixWorld(true);
+      const measured = { width: Math.max(.02, size.x - .12), depth: Math.max(.02, size.z - .12) };
+      group.userData.footprint = measured;
+      return measured;
+    };
+    const fa = footprint(a), fb = footprint(b), delta = new THREE.Vector2(b.position.x - a.position.x, b.position.z - a.position.z);
+    const axes = [
+      new THREE.Vector2(Math.cos(a.rotation.y), Math.sin(a.rotation.y)),
+      new THREE.Vector2(-Math.sin(a.rotation.y), Math.cos(a.rotation.y)),
+      new THREE.Vector2(Math.cos(b.rotation.y), Math.sin(b.rotation.y)),
+      new THREE.Vector2(-Math.sin(b.rotation.y), Math.cos(b.rotation.y)),
+    ];
+    const basis = (rotation: number) => [
+      new THREE.Vector2(Math.cos(rotation), Math.sin(rotation)),
+      new THREE.Vector2(-Math.sin(rotation), Math.cos(rotation)),
+    ];
+    const [ax, az] = basis(a.rotation.y), [bx, bz] = basis(b.rotation.y);
+    return axes.every((axis) => {
+      const distance = Math.abs(delta.dot(axis));
+      const radiusA = Math.abs(ax.dot(axis)) * fa.width / 2 + Math.abs(az.dot(axis)) * fa.depth / 2;
+      const radiusB = Math.abs(bx.dot(axis)) * fb.width / 2 + Math.abs(bz.dot(axis)) * fb.depth / 2;
+      return distance < radiusA + radiusB;
+    });
   }
   private refreshPlacementValidity() {
     if (!this.placement) return;
@@ -2959,7 +3693,7 @@ export class Game {
       : needsSupport && !data.supportId
         ? "Place this object on a table, desk, shelf, or cabinet."
         : collision
-        ? "This overlaps another object. Choose a clear position."
+        ? `${data.name} overlaps ${this.objectLabel(collision)}. Choose a clear position.`
         : "This object must stay inside the room.";
     status.dataset.valid = String(valid);
     confirm.disabled = !valid;
@@ -3071,6 +3805,7 @@ export class Game {
   private commitPlacement() {
     if (!this.placement) return;
     if (!this.placement.valid) {
+      navigator.vibrate?.([18, 35, 18]);
       this.announce("Choose a clear position before placing this object.");
       return;
     }
@@ -3081,6 +3816,7 @@ export class Game {
     this.surfaces.setPersistent("placement-toolbar", false);
     document.body.classList.remove("placing-object");
     this.add(catalog, placed, true);
+    navigator.vibrate?.(14);
     this.canvas.focus({ preventScroll: true });
     localStorage.setItem("my-little-room-placement-hint-v1", "complete");
     this.announce(`${catalog.name} placed and selected. Undo is available.`);
@@ -3144,7 +3880,7 @@ export class Game {
       g.position.set(data.x, 0, data.z);
       g.rotation.y = data.rot;
     } else if (d?.x === undefined && d?.z === undefined) {
-      const spot = this.findOpenFloorSpot(g);
+      const spot = this.findOpenFloorSpot(g, data);
       data.x = spot.x;
       data.z = spot.z;
       g.position.set(data.x, data.y ?? 0, data.z);
@@ -3261,7 +3997,7 @@ export class Game {
         }
     }
   }
-  private findOpenFloorSpot(g: THREE.Group) {
+  private findOpenFloorSpot(g: THREE.Group, data: ItemData) {
     const { halfX, halfZ } = this.roomLimitsFor(g),
       padding = 0.28;
     const occupied = [...this.items.values()].map((item) =>
@@ -3284,6 +4020,16 @@ export class Game {
     for (const candidate of candidates) {
       const clamped = this.clampToRoom(g, candidate.x, candidate.y),
         p = new THREE.Vector2(clamped.x, clamped.z);
+      // Use the actual transformed footprint before accepting a position.
+      // Several models (notably armchairs) are intentionally asymmetric around
+      // their origin, so half-extents alone can report a false clear spot.
+      g.position.set(p.x, data.y ?? 0, p.y);
+      g.updateMatrixWorld(true);
+      // Placement previews are rare user actions, so prefer an exhaustive
+      // check here. The spatial grid remains the fast path for dragging and
+      // dense-room editing, while startup cannot expose a stale-grid gap.
+      if (!this.objectCollision(g, data, new Set(), true) && this.placementPoint(g, p.x, p.y))
+        return { x: p.x, z: p.y };
       let overlap = 0;
       for (const box of occupied) {
         const dx =
@@ -3853,7 +4599,9 @@ export class Game {
       add(new THREE.BoxGeometry(1.6, 0.08, 0.55), cream, 0, 1.86, -0.08);
     } else if (d.kind === "wardrobe") {
       add(new THREE.BoxGeometry(2.7, 3.8, 1.15), mat, 0, 1.9, 0);
-      add(new THREE.BoxGeometry(0.035, 3.45, 0.025), dark, 0, 2, 0.588);
+      // A shallow recessed reveal separates the doors without reading as a
+      // freestanding panel pasted onto the wardrobe front.
+      add(new THREE.BoxGeometry(0.018, 3.45, 0.012), dark, 0, 2, 0.568);
       for (const x of [-0.22, 0.22])
         add(new THREE.SphereGeometry(0.07, 10, 8), cream, x, 2, 0.65);
       add(new THREE.BoxGeometry(2.85, 0.18, 1.3), dark, 0, 0.12, 0);
@@ -4186,6 +4934,21 @@ export class Game {
         0.25,
         0.12,
       );
+    } else if (d.kind === "storybookbox") {
+      const placeholder = add(
+        new THREE.BoxGeometry(1.25, 0.78, 1.65),
+        new THREE.MeshStandardMaterial({
+          color: 0xe3c9a3,
+          roughness: 0.84,
+          transparent: true,
+          opacity: 0.48,
+        }),
+        0,
+        0.39,
+        0,
+      );
+      placeholder.name = "memory-box-placeholder";
+      void this.attachMemoryBoxModel(g, placeholder);
     } else if (d.kind === "musicbox") {
       add(new THREE.BoxGeometry(1.25, 0.65, 0.9), mat, 0, 0.38, 0);
       add(new THREE.BoxGeometry(1.35, 0.12, 1), dark, 0, 0.77, 0);
@@ -4575,7 +5338,50 @@ export class Game {
     g.position.set(d.x, d.y ?? 0, d.z);
     g.rotation.y = d.rot;
     g.scale.setScalar(d.scale ?? 1);
+    g.visible = !d.hidden;
     return g;
+  }
+  private loadMemoryBoxTemplate() {
+    if (!this.memoryBoxTemplate) {
+      this.memoryBoxTemplate = import("three/addons/loaders/GLTFLoader.js")
+        .then(({ GLTFLoader }) => new GLTFLoader().loadAsync(
+          `${import.meta.env.BASE_URL}assets/models/storybook-memory-box/storybook-memory-box.glb`,
+        ))
+        .then(({ scene }) => {
+          scene.name = "Storybook memory box PBR model";
+          scene.traverse((object) => {
+            if (!(object instanceof THREE.Mesh)) return;
+            object.castShadow = true;
+            object.receiveShadow = true;
+          });
+          return scene;
+        });
+    }
+    return this.memoryBoxTemplate;
+  }
+  private async attachMemoryBoxModel(group: THREE.Group, placeholder: THREE.Mesh) {
+    try {
+      const template = await this.loadMemoryBoxTemplate();
+      if (!group.parent && !this.placement?.group.children.includes(group)) return;
+      const model = template.clone(true);
+      const bounds = new THREE.Box3().setFromObject(model);
+      const size = bounds.getSize(new THREE.Vector3());
+      const scale = 1.7 / Math.max(size.x, size.z, 0.001);
+      model.scale.setScalar(scale);
+      model.position.y = -bounds.min.y * scale;
+      model.rotation.y = Math.PI;
+      group.remove(placeholder);
+      placeholder.geometry.dispose();
+      (placeholder.material as THREE.Material).dispose();
+      group.add(model);
+      group.userData.externalAsset = "tripo:490ed48c-878f-4b5e-94a4-60dab8918017";
+      group.userData.externalAssetReady = true;
+      this.diagnosticsObjectsUpdatedAt = 0;
+    } catch (error) {
+      group.userData.externalAssetReady = false;
+      group.userData.externalAssetError = error instanceof Error ? error.message : String(error);
+      console.warn("Storybook memory box model could not load; using the lightweight fallback.", error);
+    }
   }
   private ownerOf(o: THREE.Object3D) {
     let owner = o;
@@ -4606,10 +5412,14 @@ export class Game {
       const g = this.ownerOf(hits[0].object);
       if (!g) return;
       this.select(g);
+      const d = this.data.find((x) => x.id === g.userData.itemId);
+      if (d?.locked) {
+        this.announce(`${this.objectLabel(d)} is locked. Unlock it in Precision tools to move it.`);
+        return;
+      }
       this.checkpoint();
       this.drag = true;
       this.controls.enabled = false;
-      const d = this.data.find((x) => x.id === g.userData.itemId);
       if (d) this.dragValid = true;
       this.doorFollowers = [];
       if (d && ARCHITECTURAL_KINDS.has(d.kind)) {
@@ -4917,6 +5727,7 @@ export class Game {
   private modify(n: number) {
     const d = this.findData();
     if (!d || !this.selected) return;
+    if (d.locked) return this.announce(`${this.objectLabel(d)} is locked.`);
     this.checkpoint();
     if (ARCHITECTURAL_KINDS.has(d.kind)) {
       const oldX = d.x,
@@ -4976,6 +5787,7 @@ export class Game {
   private adjustHeight(n: number) {
     const d = this.findData();
     if (!d || !this.selected) return;
+    if (d.locked) return this.announce(`${this.objectLabel(d)} is locked.`);
     if (ARCHITECTURAL_KINDS.has(d.kind)) return;
     const oldY = d.y ?? 0,
       nextY = THREE.MathUtils.clamp(oldY + n, 0, 6),
@@ -5046,6 +5858,7 @@ export class Game {
   private remove() {
     const d = this.findData();
     if (!d || !this.selected) return;
+    if (d.locked) return this.announce(`${this.objectLabel(d)} is locked.`);
     const architectural = ARCHITECTURAL_KINDS.has(d.kind);
     this.checkpoint();
     for (const child of this.data.filter((x) => x.supportId === d.id)) {
@@ -5100,6 +5913,7 @@ export class Game {
       this.items.set(d.id, g);
       this.scene.add(g);
     }
+    this.rebuildCollisionGrid();
     if (selectedId) this.select(this.items.get(selectedId));
     this.renderObjectManager();
     this.updateButtons();
@@ -5114,12 +5928,37 @@ export class Game {
     );
     if (managerUndo) managerUndo.disabled = !this.history.length;
   }
-  private changed() {
+  private changed(markEdited = true) {
+    if (markEdited && this.activeStoryId) this.storyMilestones.editedObject = true;
+    this.updateStoryProgress();
+    this.renderChallengeVariants();
+    this.syncSpatialOverview();
+    this.rebuildCollisionGrid();
     clearTimeout(this.saveTimer);
     this.setSaveState("Saving…", "saving");
-    this.saveTimer = window.setTimeout(() => {
+    this.saveTimer = window.setTimeout(async () => {
       localStorage.setItem("my-little-room-v1", JSON.stringify(this.data));
-      this.setSaveState("Saved", "saved");
+      try {
+        if (this.currentRoom) {
+          const thumbnail = Date.now() - this.lastRoomThumbnailAt > 3_000
+            ? await this.captureCurrentCanvasThumbnail()
+            : undefined;
+          this.currentRoom = await this.persistence.scheduleRoomSave({
+            ...this.currentRoom,
+            thumbnail: thumbnail ?? this.currentRoom.thumbnail,
+            name: this.roomName,
+            design: this.currentDesign(),
+          });
+          const index = this.roomRecords.findIndex((room) => room.id === this.currentRoom!.id);
+          if (index >= 0) this.roomRecords[index] = this.currentRoom;
+          else this.roomRecords.unshift(this.currentRoom);
+          this.renderRoomLibrary();
+        }
+        this.setSaveState("Saved", "saved");
+      } catch (error) {
+        console.warn("IndexedDB save failed; local backup was kept.", error);
+        this.setSaveState("Saved locally", "error");
+      }
       const t = document.querySelector("#toast")!;
       t.classList.add("show");
       setTimeout(() => t.classList.remove("show"), 1400);
@@ -5127,6 +5966,801 @@ export class Game {
     this.publish();
     this.updateButtons();
     this.syncTransformReadout();
+  }
+  private currentDesign(): ImportedDesign {
+    return {
+      name: this.roomName,
+      width: this.roomWidth,
+      depth: this.roomDepth,
+      shape: this.roomShape,
+      shapeWidth: this.roomShapeWidth,
+      crossbarDepth: this.roomCrossbarDepth,
+      wallColor: this.roomWallColor,
+      floorColor: this.roomFloorColor,
+      wallStyle: this.roomWallStyle,
+      floorStyle: this.roomFloorStyle,
+      evening: this.evening,
+      lightingMood: this.lightingMood,
+      muted: this.muted,
+      items: structuredClone(this.data),
+      story: {
+        activeId: this.activeStoryId,
+        ...this.storyMilestones,
+      },
+      walkInteractions: this.walkInteractions.serialize(),
+      progression: this.progression.serialize(),
+    };
+  }
+  private applyPersistedDesign(raw: unknown) {
+    const design = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? raw as Partial<ImportedDesign>
+      : undefined;
+    const items = Array.isArray(raw) ? raw : design?.items;
+    if (Array.isArray(items)) {
+      this.data = items.filter((item): item is ItemData => Boolean(
+        item && typeof item === "object" &&
+        CATALOG.some((catalog) => catalog.kind === (item as ItemData).kind),
+      ));
+    }
+    if (design) {
+      if (typeof design.width === "number") this.roomWidth = THREE.MathUtils.clamp(design.width, 10, 20);
+      if (typeof design.depth === "number") this.roomDepth = THREE.MathUtils.clamp(design.depth, 8, 16);
+      if (design.shape && ["rectangle", "l", "t", "u"].includes(design.shape)) this.roomShape = design.shape;
+      if (typeof design.shapeWidth === "number") this.roomShapeWidth = THREE.MathUtils.clamp(design.shapeWidth, 0, 1);
+      if (typeof design.crossbarDepth === "number") this.roomCrossbarDepth = THREE.MathUtils.clamp(design.crossbarDepth, 0, 1);
+      if (typeof design.wallColor === "number") this.roomWallColor = design.wallColor;
+      if (typeof design.floorColor === "number") this.roomFloorColor = design.floorColor;
+      if (design.wallStyle && WALL_FINISH_STYLES.includes(design.wallStyle)) this.roomWallStyle = design.wallStyle;
+      if (design.floorStyle && FLOOR_FINISH_STYLES.includes(design.floorStyle)) this.roomFloorStyle = design.floorStyle;
+      this.evening = Boolean(design.evening);
+      this.lightingMood = design.lightingMood ?? (this.evening ? "evening" : "afternoon");
+      this.muted = Boolean(design.muted);
+      if (typeof design.name === "string") this.roomName = this.cleanRoomName(design.name);
+      this.activeStoryId = roomStoryById(design.story?.activeId)?.id;
+      this.storyMilestones = {
+        lookedAround: Boolean(design.story?.lookedAround),
+        enteredWalk: Boolean(design.story?.enteredWalk),
+        photoCount: Math.max(0, Number(design.story?.photoCount) || 0),
+        editedObject: Boolean(design.story?.editedObject),
+      };
+      this.walkInteractions.restore(design.walkInteractions);
+      this.progression.restore(design.progression);
+    }
+    this.sound.setMuted(this.muted);
+    this.rebuild();
+    this.clampAllToRoom();
+    this.history = [];
+    this.future = [];
+    this.select(undefined);
+    this.applyTimeOfDay();
+    this.renderStoryPanel();
+  }
+  private presentCreativeRewards(rewards: readonly CreativeReward[]) {
+    if (!rewards.length) return;
+    const reward = rewards[0];
+    const toast = document.querySelector<HTMLElement>("#toast");
+    if (toast) {
+      toast.textContent = `${reward.type === "badge" ? "Keepsake" : "New option"}: ${reward.title}`;
+      toast.classList.add("show");
+      window.setTimeout(() => toast.classList.remove("show"), 2800);
+    }
+    this.announce(`${reward.title}. ${reward.description}`);
+    this.renderStoryPanel();
+  }
+  private storyState() {
+    return {
+      items: this.data.map((item) => ({
+        kind: item.kind,
+        category: item.category,
+        color: item.color,
+      })),
+      shape: this.roomShape,
+      ...this.storyMilestones,
+    };
+  }
+  private updateStoryProgress() {
+    const story = roomStoryById(this.activeStoryId);
+    if (!story) return;
+    const progress = evaluateRoomStory(story, this.storyState());
+    this.progression.updateStory(progress);
+    this.renderStoryPanel();
+    if (progress.complete) {
+      const badge = document.querySelector<HTMLElement>("#story-dock-status");
+      if (badge) badge.textContent = "✓";
+    }
+  }
+  private startStory(id?: string) {
+    const story = roomStoryById(id);
+    this.activeStoryId = story?.id;
+    this.storyMilestones = { lookedAround: false, enteredWalk: false, photoCount: 0, editedObject: false };
+    this.renderStoryPanel();
+    this.changed(false);
+    this.announce(story ? `Started ${story.title}. ${story.prompt}` : "Room Story closed. Free decorating continues.");
+  }
+  private renderStoryPanel() {
+    const list = document.querySelector<HTMLElement>("#story-list");
+    const active = document.querySelector<HTMLElement>("#active-story");
+    if (!list || !active) return;
+    list.replaceChildren();
+    const current = roomStoryById(this.activeStoryId);
+    active.hidden = !current;
+    active.inert = !current;
+    if (current) {
+      const progress = evaluateRoomStory(current, this.storyState());
+      document.querySelector<HTMLElement>("#active-story-title")!.textContent = current.title;
+      document.querySelector<HTMLElement>("#active-story-prompt")!.textContent = current.prompt;
+      document.querySelector<HTMLElement>("#story-progress-count")!.textContent =
+        progress.complete ? "Story complete" : `${progress.completedSteps} of ${progress.totalSteps}`;
+      const bar = document.querySelector<HTMLElement>("#story-progress-bar i")!;
+      bar.style.width = `${(progress.completedSteps / progress.totalSteps) * 100}%`;
+      const steps = document.querySelector<HTMLOListElement>("#story-step-list")!;
+      steps.replaceChildren();
+      for (const step of progress.steps) {
+        const row = document.createElement("li");
+        row.classList.toggle("complete", step.complete);
+        row.textContent = step.label;
+        steps.append(row);
+      }
+      this.progression.updateStory(progress);
+    }
+    for (const story of ROOM_STORIES) {
+      const button = document.createElement("button");
+      button.className = "story-card";
+      button.dataset.storyId = story.id;
+      button.setAttribute("aria-current", String(story.id === current?.id));
+      const title = document.createElement("strong");
+      title.textContent = story.title;
+      const copy = document.createElement("small");
+      copy.textContent = story.premise;
+      button.append(title, copy);
+      button.onclick = () => this.startStory(story.id);
+      list.append(button);
+    }
+    const rewardList = document.querySelector<HTMLElement>("#creative-rewards");
+    if (rewardList) {
+      rewardList.replaceChildren();
+      const save = this.progression.serialize();
+      const rewards = [...save.badges, ...save.unlocks];
+      if (!rewards.length) rewardList.textContent = "Your discoveries will gather here.";
+      for (const id of rewards) {
+        const chip = document.createElement("span");
+        chip.className = "reward-chip";
+        chip.textContent = id.replaceAll("-", " ");
+        rewardList.append(chip);
+      }
+    }
+  }
+  private handlePersistenceIssue(message: string) {
+    this.setSaveState("Storage needs attention", "error");
+    this.announce(message);
+  }
+  private renderRoomLibrary() {
+    const list = document.querySelector<HTMLElement>("#room-library-list");
+    if (!list) return;
+    this.roomThumbnailUrls.forEach((url) => URL.revokeObjectURL(url));
+    this.roomThumbnailUrls.clear();
+    list.replaceChildren();
+    const archivedList = document.querySelector<HTMLElement>("#archived-room-list");
+    archivedList?.replaceChildren();
+    const archivedCount = this.roomRecords.filter((room) => room.archived).length;
+    const archivedLabel = document.querySelector<HTMLElement>("#archived-room-count");
+    if (archivedLabel) archivedLabel.textContent = archivedCount ? `(${archivedCount})` : "";
+    const sorted = [...this.roomRecords].sort((a, b) => b.updatedAt - a.updatedAt);
+    for (const room of sorted) {
+      const card = document.createElement("article");
+      card.className = "room-library-card";
+      card.dataset.roomId = room.id;
+      card.setAttribute("aria-current", String(room.id === this.currentRoom?.id));
+      if (room.thumbnail) {
+        const image = document.createElement("img");
+        const url = URL.createObjectURL(room.thumbnail);
+        this.roomThumbnailUrls.set(room.id, url);
+        image.src = url;
+        image.alt = "";
+        card.append(image);
+      } else {
+        const placeholder = document.createElement("span");
+        placeholder.className = "room-card-placeholder";
+        placeholder.textContent = "⌂";
+        placeholder.setAttribute("aria-hidden", "true");
+        card.append(placeholder);
+      }
+      const copy = document.createElement("div");
+      copy.className = "room-card-copy";
+      const title = document.createElement("strong");
+      title.textContent = room.name;
+      const date = document.createElement("small");
+      date.textContent = room.id === this.currentRoom?.id
+        ? "Open now"
+        : `Edited ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(room.updatedAt)}`;
+      const design = room.design && typeof room.design === "object"
+        ? room.design as Partial<ImportedDesign>
+        : undefined;
+      const details = document.createElement("small");
+      const objectCount = Array.isArray(design?.items) ? design.items.length : 0;
+      const story = roomStoryById(design?.story?.activeId);
+      details.textContent = `${objectCount} object${objectCount === 1 ? "" : "s"}${story ? ` · ${story.title}` : " · Free decorating"}`;
+      copy.append(title, date, details);
+      const actions = document.createElement("div");
+      actions.className = "room-card-actions";
+      const action = (label: string, run: () => void | Promise<void>) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.onclick = () => void run();
+        return button;
+      };
+      if (room.archived) {
+        actions.append(
+          action("Restore", () => this.setRoomArchived(room.id, false)),
+          action("Delete forever", () => this.deleteArchivedRoom(room.id)),
+        );
+      } else {
+        actions.append(
+          action(room.id === this.currentRoom?.id ? "Open" : "Open", () => this.openRoomRecord(room.id)),
+          action("Rename", () => this.renameRoomRecord(room.id)),
+          action("Duplicate", () => this.duplicateRoomRecord(room.id)),
+          action("Export", () => this.exportRoomRecord(room.id)),
+          action("Archive", () => this.setRoomArchived(room.id, true)),
+        );
+      }
+      card.append(copy, actions);
+      (room.archived ? archivedList : list)?.append(card);
+    }
+    void this.renderSnapshotList();
+    void this.renderScrapbook();
+  }
+  private async renderScrapbook() {
+    const list = document.querySelector<HTMLElement>("#scrapbook-list"),
+      compare = document.querySelector<HTMLElement>("#scrapbook-compare"),
+      storage = document.querySelector<HTMLElement>("#scrapbook-storage");
+    if (!list || !compare) return;
+    this.scrapbookUrls.forEach((url) => URL.revokeObjectURL(url));
+    this.scrapbookUrls.clear();
+    list.replaceChildren();
+    compare.replaceChildren();
+    const entries = await this.persistence.listScrapbookEntries();
+    const validIds = new Set(entries.map((entry) => entry.id));
+    this.scrapbookComparison.forEach((id) => {
+      if (!validIds.has(id)) this.scrapbookComparison.delete(id);
+    });
+    if (!entries.length) {
+      const empty = document.createElement("p");
+      empty.className = "scrapbook-empty";
+      empty.textContent = "Your saved room photos will gather here.";
+      list.append(empty);
+    }
+    for (const entry of entries) list.append(this.createScrapbookCard(entry));
+    const selected = entries.filter((entry) => this.scrapbookComparison.has(entry.id)).slice(0, 2);
+    compare.hidden = selected.length !== 2;
+    if (selected.length === 2) {
+      for (const entry of selected) {
+        const figure = document.createElement("figure");
+        const image = document.createElement("img");
+        image.src = this.scrapbookUrl(entry);
+        image.alt = entry.metadata.caption ?? "Saved room view";
+        const caption = document.createElement("figcaption");
+        caption.textContent = entry.metadata.caption ?? "Untitled memory";
+        figure.append(image, caption);
+        compare.append(figure);
+      }
+    }
+    try {
+      const estimate = await this.persistence.estimateStorage();
+      if (storage) storage.textContent = estimate.usage === undefined
+        ? `${entries.length} photo${entries.length === 1 ? "" : "s"}`
+        : `${entries.length} photos · ${(estimate.usage / 1_048_576).toFixed(1)} MB used`;
+    } catch {
+      if (storage) storage.textContent = `${entries.length} photo${entries.length === 1 ? "" : "s"}`;
+    }
+  }
+  private scrapbookUrl(entry: ScrapbookEntry) {
+    const existing = this.scrapbookUrls.get(entry.id);
+    if (existing) return existing;
+    const url = URL.createObjectURL(entry.image);
+    this.scrapbookUrls.set(entry.id, url);
+    return url;
+  }
+  private createScrapbookCard(entry: ScrapbookEntry) {
+    const card = document.createElement("article");
+    card.className = "scrapbook-card";
+    const image = document.createElement("img");
+    image.src = this.scrapbookUrl(entry);
+    image.alt = entry.metadata.caption ?? "Saved room view";
+    const caption = document.createElement("strong");
+    caption.textContent = entry.metadata.caption ?? "Untitled memory";
+    const details = document.createElement("small");
+    details.textContent = [
+      entry.metadata.storyTitle,
+      entry.metadata.lighting,
+      new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(entry.createdAt),
+    ].filter(Boolean).join(" · ");
+    const controls = document.createElement("div");
+    controls.className = "scrapbook-card-actions";
+    const select = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = this.scrapbookComparison.has(entry.id);
+    checkbox.onchange = () => {
+      if (checkbox.checked && this.scrapbookComparison.size >= 2) {
+        checkbox.checked = false;
+        this.setFileStatus("Choose at most two scrapbook photos to compare.", "error");
+        return;
+      }
+      if (checkbox.checked) this.scrapbookComparison.add(entry.id);
+      else this.scrapbookComparison.delete(entry.id);
+      void this.renderScrapbook();
+    };
+    select.append(checkbox, document.createTextNode(" Compare"));
+    const button = (label: string, run: () => void | Promise<void>) => {
+      const element = document.createElement("button");
+      element.type = "button";
+      element.textContent = label;
+      element.onclick = () => void run();
+      return element;
+    };
+    controls.append(
+      select,
+      button("Caption", () => this.editScrapbookCaption(entry)),
+      button("Download", () => this.downloadScrapbookEntry(entry)),
+      button("Delete", () => this.deleteScrapbookEntry(entry)),
+    );
+    card.append(image, caption, details, controls);
+    return card;
+  }
+  private async editScrapbookCaption(entry: ScrapbookEntry) {
+    const requested = window.prompt("Scrapbook caption", entry.metadata.caption ?? "");
+    if (requested === null) return;
+    await this.persistence.saveScrapbookEntry({
+      id: entry.id,
+      roomId: entry.roomId,
+      image: entry.image,
+      createdAt: entry.createdAt,
+      metadata: { ...entry.metadata, caption: requested.trim().slice(0, 120) || "Untitled memory" },
+    });
+    await this.renderScrapbook();
+  }
+  private downloadScrapbookEntry(entry: ScrapbookEntry) {
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(entry.image);
+    link.href = url;
+    link.download = `${this.cleanRoomName(entry.metadata.caption ?? "room-memory").toLowerCase().replaceAll(" ", "-")}.png`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+  private async deleteScrapbookEntry(entry: ScrapbookEntry) {
+    if (!window.confirm(`Delete “${entry.metadata.caption ?? "this memory"}” from the private scrapbook?`)) return;
+    await this.persistence.deleteScrapbookEntry(entry.id);
+    this.scrapbookComparison.delete(entry.id);
+    await this.renderScrapbook();
+    this.setFileStatus("Scrapbook photo deleted.", "success");
+  }
+  private async renderSnapshotList() {
+    const list = document.querySelector<HTMLElement>("#snapshot-list");
+    if (!list) return;
+    list.replaceChildren();
+    if (!this.currentRoom) return;
+    const snapshots = await this.persistence.listSnapshots(this.currentRoom.id);
+    if (!snapshots.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "No checkpoints yet. Save one before a big change.";
+      list.append(empty);
+      return;
+    }
+    for (const snapshot of snapshots) {
+      const row = document.createElement("div");
+      row.className = "snapshot-row";
+      const copy = document.createElement("span");
+      const title = document.createElement("strong");
+      title.textContent = snapshot.reason;
+      const date = document.createElement("small");
+      date.textContent = new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(snapshot.createdAt);
+      copy.append(title, date);
+      const restore = document.createElement("button");
+      restore.textContent = "Restore";
+      restore.onclick = () => void this.restoreSnapshot(snapshot.id, snapshot.design, snapshot.reason);
+      row.append(copy, restore);
+      list.append(row);
+    }
+  }
+  private async createNewRoom() {
+    await this.persistence.flushPendingWrites();
+    const template = document.querySelector<HTMLSelectElement>("#new-room-template")?.value ?? "blank";
+    const starterItems = template === "blank" ? [] : structuredClone(this.data.slice(0, 10));
+    const design: ImportedDesign = {
+      ...this.currentDesign(),
+      name: template === "story" ? "My cozy corner" : template === "furnished" ? "Furnished starter" : "Untitled room",
+      items: starterItems,
+      story: template === "story"
+        ? { activeId: "cozy-reading-corner", lookedAround: false, enteredWalk: false, photoCount: 0, editedObject: false }
+        : undefined,
+      walkInteractions: undefined,
+    };
+    const room = await this.persistence.createRoom({ name: design.name, design });
+    this.progression.record({ type: "room-created", roomId: room.id });
+    this.roomRecords.unshift(room);
+    await this.openRoomRecord(room.id);
+    this.surfaces.close("file-panel");
+    this.announce("Created a blank room. Add the first thing that makes it feel yours.");
+  }
+  private async renameRoomRecord(id: string) {
+    const room = this.roomRecords.find((entry) => entry.id === id);
+    if (!room) return;
+    const requested = window.prompt("Name this room", room.name);
+    if (requested === null) return;
+    const name = this.cleanRoomName(requested);
+    const saved = await this.persistence.saveRoom({ ...room, name, design: {
+      ...(room.design as ImportedDesign), name,
+    } });
+    this.roomRecords[this.roomRecords.indexOf(room)] = saved;
+    if (id === this.currentRoom?.id) {
+      this.currentRoom = saved;
+      this.roomName = name;
+      this.syncRoomNameControl();
+    }
+    this.renderRoomLibrary();
+  }
+  private async duplicateRoomRecord(id: string) {
+    const room = await this.persistence.getRoom(id);
+    if (!room) return;
+    const duplicate = await this.persistence.importRoom({
+      name: `${room.name} copy`,
+      design: room.design,
+      thumbnail: room.thumbnail,
+    });
+    this.roomRecords.unshift(duplicate);
+    this.renderRoomLibrary();
+    this.setFileStatus(`Duplicated ${room.name}.`, "success");
+  }
+  private async setRoomArchived(id: string, archived: boolean) {
+    const room = this.roomRecords.find((entry) => entry.id === id);
+    if (!room || (archived && id === this.currentRoom?.id)) {
+      if (archived) this.setFileStatus("Open another room before archiving this one.", "error");
+      return;
+    }
+    const saved = await this.persistence.saveRoom(
+      archived ? archiveRoomRecord(room) : restoreRoomRecord(room),
+    );
+    this.roomRecords[this.roomRecords.indexOf(room)] = saved;
+    this.renderRoomLibrary();
+    this.setFileStatus(archived ? `${room.name} moved to the recovery archive.` : `${room.name} restored.`, "success");
+  }
+  private async deleteArchivedRoom(id: string) {
+    const room = this.roomRecords.find((entry) => entry.id === id && entry.archived);
+    if (!room) return;
+    const confirmation = window.prompt(`Type “${room.name}” to permanently delete this room and its scrapbook photos.`);
+    if (confirmation !== room.name) {
+      if (confirmation !== null) this.setFileStatus("Room name did not match. Nothing was deleted.", "error");
+      return;
+    }
+    await this.persistence.deleteRoom(id);
+    this.roomRecords = this.roomRecords.filter((entry) => entry.id !== id);
+    this.renderRoomLibrary();
+    this.setFileStatus(`${room.name} was permanently deleted.`, "success");
+  }
+  private async exportRoomRecord(id: string) {
+    const room = await this.persistence.getRoom(id);
+    if (!room) return;
+    const design = room.design as ImportedDesign;
+    const roomPackage = createSharePackage({
+      room: {
+        name: room.name,
+        width: design.width,
+        depth: design.depth,
+        shape: design.shape,
+        shapeWidth: design.shapeWidth,
+        crossbarDepth: design.crossbarDepth,
+        wallColor: design.wallColor,
+        floorColor: design.floorColor,
+        wallStyle: design.wallStyle,
+        floorStyle: design.floorStyle,
+      },
+      items: structuredClone(design.items),
+      preferences: { evening: design.evening },
+    });
+    const download = createSharePackageDownload(roomPackage);
+    const url = URL.createObjectURL(download.blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = download.filename;
+    link.click();
+    URL.revokeObjectURL(url);
+    this.setFileStatus(`Exported ${room.name}.`, "success");
+  }
+  private async duplicateCurrentRoom() {
+    if (!this.currentRoom) return;
+    await this.persistence.flushPendingWrites();
+    const room = await this.persistence.importRoom({
+      name: `${this.roomName} copy`,
+      design: this.currentDesign(),
+    });
+    this.roomRecords.unshift(room);
+    await this.openRoomRecord(room.id);
+    this.renderRoomLibrary();
+    this.announce(`Created ${room.name}.`);
+  }
+  private async createRoomSnapshot() {
+    if (!this.currentRoom) return;
+    await this.persistence.flushPendingWrites();
+    await this.persistence.createSnapshot(
+      this.currentRoom.id,
+      this.currentDesign(),
+      `${this.roomName} checkpoint`,
+    );
+    await this.renderSnapshotList();
+    this.setFileStatus("Checkpoint saved. You can safely keep experimenting.", "success");
+    this.audio("chime");
+  }
+  private async restoreSnapshot(snapshotId: string, design: unknown, reason: string) {
+    const previous = structuredClone(this.data);
+    this.applyPersistedDesign(design);
+    this.history = [previous];
+    this.future = [];
+    this.updateButtons();
+    this.progression.record({ type: "snapshot-restored", snapshotId });
+    this.changed();
+    this.resetCamera();
+    this.setFileStatus(`Restored ${reason}. You can undo this change.`, "success");
+    this.announce(`Restored ${reason}.`);
+  }
+  private async openRoomRecord(id: string) {
+    if (id === this.currentRoom?.id) return;
+    const room = await this.persistence.getRoom(id);
+    if (!room) return;
+    await this.persistence.flushPendingWrites();
+    this.activeChallenge = undefined;
+    this.currentRoom = room;
+    localStorage.setItem("my-little-room-current-id", room.id);
+    this.applyPersistedDesign(room.design);
+    this.roomName = room.name;
+    this.syncRoomNameControl();
+    this.syncRoomControls();
+    this.resetCamera();
+    this.renderRoomLibrary();
+    this.announce(`Opened ${room.name}.`);
+  }
+  private createEditableSharePackage(): SharePackage {
+    const interactionState = this.walkInteractions.serialize();
+    const story = roomStoryById(this.activeStoryId);
+    const storyProgress = story ? evaluateRoomStory(story, this.storyState()) : undefined;
+    return createSharePackage({
+      room: {
+        name: this.roomName,
+        width: this.roomWidth,
+        depth: this.roomDepth,
+        shape: this.roomShape,
+        shapeWidth: this.roomShapeWidth,
+        crossbarDepth: this.roomCrossbarDepth,
+        wallColor: this.roomWallColor,
+        floorColor: this.roomFloorColor,
+        wallStyle: this.roomWallStyle,
+        floorStyle: this.roomFloorStyle,
+      },
+      items: this.data.map((item) => {
+        const interaction = interactionState.objects[item.id];
+        return {
+          ...structuredClone(item),
+          ...(interaction ? { interaction: {
+            kind: interaction.kind,
+            state: interaction.state,
+            lastInteractedAt: interaction.lastInteractedAt,
+          } } : {}),
+        };
+      }),
+      preferences: { evening: this.evening, gridSnap: this.gridSnap },
+      ...(story && storyProgress ? {
+        story: {
+          id: story.id,
+          title: story.title,
+          status: storyProgress.complete ? "complete" as const : "active" as const,
+          progress: {
+            lookedAround: this.storyMilestones.lookedAround,
+            enteredWalk: this.storyMilestones.enteredWalk,
+            photoCount: this.storyMilestones.photoCount,
+            editedObject: this.storyMilestones.editedObject,
+            completedSteps: storyProgress.completedSteps,
+            totalSteps: storyProgress.totalSteps,
+          },
+        },
+      } : {}),
+      metadata: {
+        templateId: story?.id ?? "free-sandbox",
+        templateName: story?.title ?? "Free decorating",
+        description: "An editable room shared privately by its creator.",
+        tags: [this.roomShape, this.lightingMood, ...(story ? [story.id] : [])],
+        palette: [this.roomWallColor, this.roomFloorColor],
+      },
+    });
+  }
+  private designFromSharePackage(roomPackage: SharePackage): ImportedDesign {
+    return {
+      name: roomPackage.room.name,
+      width: roomPackage.room.width,
+      depth: roomPackage.room.depth,
+      shape: roomPackage.room.shape,
+      shapeWidth: roomPackage.room.shapeWidth,
+      crossbarDepth: roomPackage.room.crossbarDepth,
+      wallColor: roomPackage.room.wallColor,
+      floorColor: roomPackage.room.floorColor,
+      wallStyle: roomPackage.room.wallStyle,
+      floorStyle: roomPackage.room.floorStyle,
+      evening: Boolean(roomPackage.preferences?.evening),
+      lightingMood: roomPackage.preferences?.evening ? "evening" : "afternoon",
+      muted: this.muted,
+      items: roomPackage.items
+        .filter((item) => CATALOG.some((catalog) => catalog.kind === item.kind))
+        .map(({ interaction: _interaction, ...item }) => ({ ...item, category: item.category as Category })),
+      story: roomPackage.story ? {
+        activeId: roomPackage.story.status === "dismissed" ? undefined : roomPackage.story.id,
+        lookedAround: Boolean(roomPackage.story.progress?.lookedAround),
+        enteredWalk: Boolean(roomPackage.story.progress?.enteredWalk),
+        photoCount: Number(roomPackage.story.progress?.photoCount) || 0,
+        editedObject: Boolean(roomPackage.story.progress?.editedObject),
+      } : undefined,
+      walkInteractions: {
+        version: 1,
+        objects: Object.fromEntries(roomPackage.items.flatMap((item) => item.interaction
+          ? [[item.id, {
+            kind: String(item.interaction.kind ?? item.kind),
+            state: item.interaction.state,
+            lastInteractedAt: Number(item.interaction.lastInteractedAt) || 0,
+          }]]
+          : [])),
+      },
+    };
+  }
+  private async importSharedPackage(roomPackage: SharePackage, source: string) {
+    const design = this.designFromSharePackage(roomPackage);
+    const room = await this.persistence.createRoom({
+      name: design.name,
+      design,
+    });
+    this.roomRecords.unshift(room);
+    await this.openRoomRecord(room.id);
+    this.setFileStatus(`Opened editable room from ${source}. Your original rooms are unchanged.`, "success");
+  }
+  private async importSharedRoomFromHash() {
+    if (!location.hash.startsWith("#room=")) return;
+    try {
+      const inspection = inspectSharePackageHash(location.hash);
+      if (await this.confirmSharePreview(inspection.preview)) {
+        const imported = remapSharePackageIds(inspection.package);
+        await this.importSharedPackage(imported.package, "shared link");
+        history.replaceState(null, "", `${location.pathname}${location.search}`);
+      }
+    } catch (error) {
+      this.setFileStatus(error instanceof Error ? error.message : "The shared room link could not be opened.", "error");
+    }
+  }
+  private async copyEditableRoomLink() {
+    try {
+      const hash = encodeSharePackageHash(this.createEditableSharePackage());
+      const url = `${location.origin}${location.pathname}${location.search}${hash}`;
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url);
+      else {
+        const input = document.createElement("textarea");
+        input.value = url;
+        document.body.append(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+      this.setFileStatus("Editable room link copied. Anyone with it can open their own copy.", "success");
+      this.audio("chime");
+    } catch (error) {
+      this.setFileStatus(
+        error instanceof Error && error.message.includes("limit")
+          ? "This room is too detailed for a link. Download the editable package instead."
+          : "The room link could not be copied. Download the package instead.",
+        "error",
+      );
+    }
+  }
+  private downloadEditableRoomPackage() {
+    try {
+      const download = createSharePackageDownload(this.createEditableSharePackage());
+      const url = URL.createObjectURL(download.blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = download.filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      this.setFileStatus(`Downloaded ${download.filename}.`, "success");
+    } catch (error) {
+      this.setFileStatus(error instanceof Error ? error.message : "The editable package could not be created.", "error");
+    }
+  }
+  private async importRoomPackageFile(file: File) {
+    try {
+      const inspection = await inspectSharePackageBlob(file);
+      if (!await this.confirmSharePreview(inspection.preview)) return;
+      const imported = remapSharePackageIds(inspection.package);
+      await this.importSharedPackage(imported.package, file.name);
+    } catch (error) {
+      this.setFileStatus(error instanceof Error ? error.message : "The editable room package is invalid.", "error");
+    }
+  }
+  private confirmSharePreview(preview: SharePackagePreview) {
+    const text = document.querySelector<HTMLElement>("#share-preview-text"),
+      details = document.querySelector<HTMLDListElement>("#share-preview-details"),
+      confirm = document.querySelector<HTMLButtonElement>("#confirm-share-preview")!,
+      cancel = document.querySelector<HTMLButtonElement>("#cancel-share-preview")!;
+    if (text) text.textContent = preview.text;
+    if (details) {
+      details.replaceChildren();
+      const rows = [
+        ["Room", preview.name],
+        ["Size", preview.dimensions],
+        ["Contents", `${preview.itemCount} objects · ${preview.interactiveItemCount} interactive`],
+        ["Story", preview.story ? `${preview.story.title} · ${preview.story.status}` : "Free decorating"],
+      ];
+      for (const [label, value] of rows) {
+        const term = document.createElement("dt"), description = document.createElement("dd");
+        term.textContent = label;
+        description.textContent = value;
+        details.append(term, description);
+      }
+    }
+    this.surfaces.open("share-preview-dialog", cancel);
+    return new Promise<boolean>((resolve) => {
+      this.sharePreviewResolver = resolve;
+      confirm.onclick = () => this.finishSharePreview(true);
+      cancel.onclick = () => this.finishSharePreview(false);
+    });
+  }
+  private finishSharePreview(accepted: boolean) {
+    const resolve = this.sharePreviewResolver;
+    this.sharePreviewResolver = undefined;
+    document.querySelector<HTMLButtonElement>("#confirm-share-preview")!.onclick = null;
+    document.querySelector<HTMLButtonElement>("#cancel-share-preview")!.onclick = null;
+    this.surfaces.close("share-preview-dialog");
+    resolve?.(accepted);
+  }
+  private syncSpatialOverview() {
+    const instruction = document.querySelector<HTMLElement>("#canvas-instructions");
+    if (!instruction) return;
+    const overview = buildSpatialOverview(
+      { name: this.roomName, width: this.roomWidth, depth: this.roomDepth },
+      this.data.map((item) => {
+        const group = this.items.get(item.id);
+        const size = group
+          ? new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3())
+          : new THREE.Vector3(0.5, 1, 0.5);
+        return {
+          id: item.id,
+          name: item.name,
+          kind: item.kind,
+          x: item.x,
+          y: item.y,
+          z: item.z,
+          width: size.x,
+          height: size.y,
+          depth: size.z,
+          supportId: item.supportId,
+          landmark: SUPPORT_KINDS.has(item.kind) || item.category === "beds",
+        };
+      }),
+    );
+    instruction.textContent = `${overview.text} Use the Objects panel to select and transform every item.`;
+    const summary = document.querySelector<HTMLElement>("#spatial-summary");
+    const full = document.querySelector<HTMLElement>("#spatial-text");
+    const grid = document.querySelector<HTMLElement>("#spatial-landmarks");
+    if (!summary || !full || !grid) return;
+    summary.textContent = overview.summary;
+    full.textContent = overview.text;
+    grid.replaceChildren();
+    for (const zone of overview.zones) {
+      const card = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.textContent = zone.label;
+      const copy = document.createElement("p");
+      copy.textContent = zone.text.replace(/^.*?:\s*/, "");
+      card.append(heading, copy);
+      grid.append(card);
+    }
   }
   private setSaveState(label: string, state: "saving" | "saved" | "error") {
     const status = document.querySelector<HTMLElement>("#save-state");
@@ -5209,32 +6843,80 @@ export class Game {
       localStorage.setItem("my-little-room-v1", JSON.stringify(this.data));
   }
   private toggleTime() {
-    this.evening = !this.evening;
-    this.applyTimeOfDay();
+    const next = nextLightingMood(this.lightingMood);
+    const from = this.lightingMood;
+    this.lightingMood = next.id;
+    this.evening = next.id === "evening" || next.id === "night";
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      this.lightingTransition = undefined;
+      this.applyLightingValues(next);
+    } else {
+      this.lightingTransition = {
+        from,
+        to: next.id,
+        elapsedMs: 0,
+        durationMs: next.transitionMs,
+      };
+    }
+    this.syncLightingButton();
     this.saveRoomSettings();
+    this.changed(false);
     this.audio("chime");
-    this.announce(`Lighting changed to ${this.evening ? "Evening" : "Afternoon"}.`);
+    this.announce(`Lighting changed to ${next.label}.`);
   }
   private applyTimeOfDay() {
-    (this.scene.background as THREE.Color).setHex(
-      this.evening ? 0x313747 : 0x9fa9a1,
-    );
-    (this.scene.fog as THREE.Fog).color.setHex(
-      this.evening ? 0x42404a : 0xb9b4a5,
-    );
-    if (this.keyLight) this.keyLight.intensity = this.evening ? 42 : 80;
-    if (this.lampLight) this.lampLight.intensity = this.evening ? 14 : 5;
+    this.lightingTransition = undefined;
+    this.evening = this.lightingMood === "evening" || this.lightingMood === "night";
+    this.applyLightingValues(getLightingMood(this.lightingMood));
+    this.syncLightingButton();
+  }
+  private applyLightingValues(mood: LightingMood | LightingMoodSnapshot) {
+    (this.scene.background as THREE.Color).setHex(mood.sceneBackground);
+    const fog = this.scene.fog as THREE.Fog;
+    fog.color.setHex(mood.fogColor);
+    fog.near = mood.fogNear;
+    fog.far = mood.fogFar;
+    if (this.hemisphereLight) {
+      this.hemisphereLight.color.setHex(mood.hemisphereSky);
+      this.hemisphereLight.groundColor.setHex(mood.hemisphereGround);
+      this.hemisphereLight.intensity = mood.hemisphereIntensity;
+    }
+    if (this.keyLight) {
+      this.keyLight.color.setHex(mood.keyColor);
+      this.keyLight.intensity = mood.keyIntensity;
+      this.keyLight.position.fromArray(mood.keyPosition);
+    }
+    if (this.fillLight) {
+      this.fillLight.color.setHex(mood.fillColor);
+      this.fillLight.intensity = mood.fillIntensity;
+    }
+    if (this.lampLight) {
+      this.lampLight.color.setHex(mood.lampColor);
+      this.lampLight.intensity = mood.lampIntensity;
+    }
+    this.renderer.toneMappingExposure = mood.exposure;
+    if (this.dust?.material instanceof THREE.PointsMaterial) {
+      this.dust.material.color.setHex(mood.dustColor);
+      this.dust.material.opacity = mood.dustOpacity;
+    }
+    this.sound.setBusVolume("ambience", mood.ambienceGain);
+  }
+  private updateLightingTransition(deltaSeconds: number) {
+    const transition = this.lightingTransition;
+    if (!transition) return;
+    transition.elapsedMs += Math.max(0, deltaSeconds) * 1000;
+    const progress = THREE.MathUtils.clamp(transition.elapsedMs / transition.durationMs, 0, 1);
+    const eased = progress * progress * (3 - 2 * progress);
+    this.applyLightingValues(interpolateLightingMood(transition.from, transition.to, eased));
+    if (progress >= 1) this.lightingTransition = undefined;
+  }
+  private syncLightingButton() {
     const button = document.querySelector<HTMLButtonElement>("#time-toggle")!;
-    button.textContent = this.evening
-      ? "☾ Lighting: Evening"
-      : "☀ Lighting: Afternoon";
-    button.setAttribute("aria-pressed", String(this.evening));
-    button.setAttribute(
-      "aria-label",
-      this.evening
-        ? "Lighting: Evening. Switch to afternoon"
-        : "Lighting: Afternoon. Switch to evening",
-    );
+    const mood = getLightingMood(this.lightingMood);
+    const next = nextLightingMood(this.lightingMood);
+    button.textContent = `${mood.id === "night" || mood.id === "evening" ? "☾" : "☀"} Lighting: ${mood.label}`;
+    button.setAttribute("aria-pressed", String(mood.id !== "afternoon"));
+    button.setAttribute("aria-label", `Lighting: ${mood.label}. Switch to ${next.label}`);
   }
   private async openPhotoStudio() {
     this.surfaces.close("catalog", false);
@@ -5259,7 +6941,7 @@ export class Game {
     document.querySelector<HTMLButtonElement>("#close-photo")?.focus();
   }
   private async playCameraEffect() {
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (this.settings.value.reducedMotion) {
       this.audio("camera");
       return;
     }
@@ -5291,12 +6973,15 @@ export class Game {
     const captureId = ++this.photoCaptureId,
       studio = document.querySelector<HTMLElement>("#photo-studio")!,
       aspect = Math.max(0.1, this.canvas.clientWidth / this.canvas.clientHeight),
-      dpr = Math.min(window.devicePixelRatio || 1, 2),
-      width = Math.min(
-        2400,
-        Math.max(900, Math.round(this.canvas.clientWidth * dpr)),
-      ),
-      height = Math.max(1, Math.round(width / aspect)),
+      requestedQuality = (document.querySelector<HTMLSelectElement>("#photo-quality")?.value ?? "standard") as PhotoQuality,
+      plan = this.photoCapture.createPlan({
+        cssWidth: this.canvas.clientWidth,
+        cssHeight: this.canvas.clientHeight,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        quality: requestedQuality,
+      }),
+      width = plan.width,
+      height = plan.height,
       camera = this.camera.clone(),
       renderTarget = new THREE.WebGLRenderTarget(width, height, {
         depthBuffer: true,
@@ -5308,7 +6993,7 @@ export class Game {
     camera.aspect = aspect;
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld(true);
-    renderTarget.samples = 4;
+    renderTarget.samples = plan.samples;
     renderTarget.texture.colorSpace = THREE.SRGBColorSpace;
     studio.classList.add("busy");
     studio.setAttribute("aria-busy", "true");
@@ -5362,11 +7047,25 @@ export class Game {
       preview.alt = `Current room view of ${this.cleanRoomName(this.roomName)}`;
       await preview.decode().catch(() => {});
       this.setPhotoStatus(
-        `Current view captured · ${width} × ${height} PNG`,
+        `Current view captured · ${width} × ${height} PNG${plan.degraded ? " · adjusted for this device" : ""}`,
         "success",
       );
+      await this.updateCurrentRoomThumbnail(output);
+      this.photoCapture.recordSuccess({
+        plan,
+        blobBytes: blob.size,
+        roomRevision: this.currentRoom?.updatedAt ?? Date.now(),
+        cameraSignature: `${camera.position.toArray().map((value) => value.toFixed(2)).join(",")}:${camera.quaternion.toArray().map((value) => value.toFixed(3)).join(",")}`,
+        thumbnailWidth: 320,
+        thumbnailHeight: 180,
+      });
     } catch (error) {
       console.error("Could not create room photo", error);
+      const message = error instanceof Error ? error.message : String(error);
+      this.photoCapture.recordFailure({
+        reason: /context/i.test(message) ? "context-loss" : /memory|allocation/i.test(message) ? "out-of-memory" : "encoding",
+        message,
+      });
       this.setPhotoStatus(
         "The photo could not be prepared. Please try again.",
         "error",
@@ -5382,6 +7081,59 @@ export class Game {
           .forEach((button) => (button.disabled = false));
       }
     }
+  }
+  private async updateCurrentRoomThumbnail(source: HTMLCanvasElement) {
+    if (!this.currentRoom) return;
+    const thumbnail = document.createElement("canvas");
+    thumbnail.width = 320;
+    thumbnail.height = 180;
+    const context = thumbnail.getContext("2d");
+    if (!context) return;
+    const sourceAspect = source.width / source.height,
+      targetAspect = thumbnail.width / thumbnail.height,
+      cropWidth = sourceAspect > targetAspect ? source.height * targetAspect : source.width,
+      cropHeight = sourceAspect > targetAspect ? source.height : source.width / targetAspect,
+      cropX = (source.width - cropWidth) / 2,
+      cropY = (source.height - cropHeight) / 2;
+    context.drawImage(source, cropX, cropY, cropWidth, cropHeight, 0, 0, thumbnail.width, thumbnail.height);
+    const blob = await new Promise<Blob | null>((resolve) => thumbnail.toBlob(resolve, "image/webp", 0.78));
+    if (!blob) return;
+    const saved = await this.persistence.saveRoom({
+      ...this.currentRoom,
+      thumbnail: blob,
+      name: this.roomName,
+      design: this.currentDesign(),
+    });
+    this.currentRoom = saved;
+    const index = this.roomRecords.findIndex((room) => room.id === saved.id);
+    if (index >= 0) this.roomRecords[index] = saved;
+    this.renderRoomLibrary();
+  }
+  private async captureCurrentCanvasThumbnail() {
+    const thumbnail = document.createElement("canvas");
+    thumbnail.width = 320;
+    thumbnail.height = 180;
+    const context = thumbnail.getContext("2d");
+    if (!context) return undefined;
+    this.renderer.render(this.scene, this.camera);
+    const sourceWidth = this.canvas.width, sourceHeight = this.canvas.height,
+      sourceAspect = sourceWidth / sourceHeight, targetAspect = thumbnail.width / thumbnail.height,
+      cropWidth = sourceAspect > targetAspect ? sourceHeight * targetAspect : sourceWidth,
+      cropHeight = sourceAspect > targetAspect ? sourceHeight : sourceWidth / targetAspect,
+      cropX = (sourceWidth - cropWidth) / 2, cropY = (sourceHeight - cropHeight) / 2;
+    context.drawImage(this.canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, thumbnail.width, thumbnail.height);
+    const blob = await new Promise<Blob | null>((resolve) => thumbnail.toBlob(resolve, "image/webp", .76));
+    if (blob) this.lastRoomThumbnailAt = Date.now();
+    return blob ?? undefined;
+  }
+  private async ensureCurrentRoomThumbnail() {
+    if (!this.currentRoom || this.currentRoom.thumbnail) return;
+    const thumbnail = await this.captureCurrentCanvasThumbnail();
+    if (!thumbnail) return;
+    this.currentRoom = await this.persistence.saveRoom({ ...this.currentRoom, thumbnail });
+    const index = this.roomRecords.findIndex((room) => room.id === this.currentRoom!.id);
+    if (index >= 0) this.roomRecords[index] = this.currentRoom;
+    this.renderRoomLibrary();
   }
   private photoFilename() {
     const slug = this.cleanRoomName(this.roomName)
@@ -5436,6 +7188,41 @@ export class Game {
       );
     }
   }
+  private async savePhotoToScrapbook() {
+    if (!this.photoBlob || !this.currentRoom) {
+      this.setPhotoStatus("Take a photo first, then keep it in the scrapbook.", "error");
+      return;
+    }
+    try {
+      const story = roomStoryById(this.activeStoryId);
+      const entry = await this.persistence.saveScrapbookEntry({
+        roomId: this.currentRoom.id,
+        image: this.photoBlob,
+        metadata: {
+          storyId: story?.id,
+          storyTitle: story?.title,
+          caption: story?.scrapbookTitle ?? this.roomName,
+          lighting: this.evening ? "evening" : "afternoon",
+          camera: {
+            position: this.camera.position.toArray(),
+            quaternion: this.camera.quaternion.toArray(),
+            fov: this.camera.fov,
+          },
+          tags: [this.roomShape, ...(story ? [story.id] : [])],
+        },
+      });
+      this.storyMilestones.photoCount += 1;
+      this.progression.record({ type: "photo-saved", photoId: entry.id });
+      this.changed(false);
+      this.setPhotoStatus("Kept in your private scrapbook on this device.", "success");
+      const button = document.querySelector<HTMLButtonElement>("#save-scrapbook");
+      if (button) button.textContent = "✓ Kept in scrapbook";
+      await this.renderScrapbook();
+    } catch (error) {
+      console.warn("Could not save scrapbook photo.", error);
+      this.setPhotoStatus("The scrapbook could not save this photo. Download still works.", "error");
+    }
+  }
   private isFirstPersonMovementKey(code: string) {
     return [
       "KeyW",
@@ -5449,6 +7236,19 @@ export class Game {
     ].includes(code);
   }
   private bindFirstPersonControls() {
+    const movementZone = document.querySelector<HTMLElement>("#walk-move-zone"),
+      lookZone = document.querySelector<HTMLElement>("#walk-look-zone"),
+      knob = document.querySelector<HTMLElement>("#walk-knob");
+    if (movementZone && lookZone) {
+      this.touchIntent = new TouchIntentController({
+        movementZone,
+        lookZone,
+        knob: knob ?? undefined,
+        deadZone: 0.14,
+        lookSensitivity: 0.0042,
+        floatingOrigin: false,
+      });
+    }
     window.addEventListener("keyup", (event) => {
       if (this.isFirstPersonMovementKey(event.code))
         this.firstPersonInputs.delete(event.code);
@@ -5567,6 +7367,10 @@ export class Game {
     };
     const start = this.firstPersonStart();
     this.firstPerson = true;
+    this.footstepDistance = 0;
+    this.storyMilestones.enteredWalk = true;
+    this.updateStoryProgress();
+    this.changed(false);
     this.firstPersonYaw = 0;
     this.firstPersonPitch = -0.04;
     this.firstPersonInputs.clear();
@@ -5593,6 +7397,7 @@ export class Game {
   private exitFirstPerson() {
     if (!this.firstPerson) return;
     this.firstPerson = false;
+    this.footstepDistance = 0;
     this.firstPersonInputs.clear();
     this.firstPersonLook = undefined;
     if (this.editorCameraState) {
@@ -5707,6 +7512,17 @@ export class Game {
   private updateFirstPerson(delta: number) {
     if (!this.firstPerson) return;
     if (this.surfaces.isOpen("photo-studio")) return;
+    const touch = this.touchIntent?.read(),
+      look = this.touchIntent?.consumeLookDelta();
+    if (look && (look.x || look.y)) {
+      this.firstPersonYaw -= look.x;
+      this.firstPersonPitch = THREE.MathUtils.clamp(
+        this.firstPersonPitch - look.y,
+        -Math.PI * 0.47,
+        Math.PI * 0.47,
+      );
+      this.applyFirstPersonLook();
+    }
     const forwardAmount =
         Number(
           this.firstPersonInputs.has("KeyW") ||
@@ -5717,7 +7533,7 @@ export class Game {
           this.firstPersonInputs.has("KeyS") ||
             this.firstPersonInputs.has("ArrowDown") ||
             this.firstPersonInputs.has("TouchBack"),
-        ),
+        ) - (touch?.moveY ?? 0),
       rightAmount =
         Number(
           this.firstPersonInputs.has("KeyD") ||
@@ -5728,10 +7544,19 @@ export class Game {
           this.firstPersonInputs.has("KeyA") ||
             this.firstPersonInputs.has("ArrowLeft") ||
             this.firstPersonInputs.has("TouchLeft"),
-        );
-    if (!forwardAmount && !rightAmount) return;
-    const length = Math.hypot(forwardAmount, rightAmount) || 1,
-      speed = 3.35 * Math.min(delta, 0.05),
+        ) + (touch?.moveX ?? 0);
+    const targetX = THREE.MathUtils.clamp(rightAmount, -1, 1),
+      targetY = THREE.MathUtils.clamp(forwardAmount, -1, 1),
+      smoothing = 1 - Math.exp(-Math.min(delta, 0.05) * 10);
+    this.firstPersonVelocity.x = THREE.MathUtils.lerp(this.firstPersonVelocity.x, targetX, smoothing);
+    this.firstPersonVelocity.y = THREE.MathUtils.lerp(this.firstPersonVelocity.y, targetY, smoothing);
+    if (this.firstPersonVelocity.lengthSq() < 0.0004) {
+      this.firstPersonVelocity.set(0, 0);
+      this.updateWalkTarget();
+      return;
+    }
+    const length = Math.max(1, this.firstPersonVelocity.length()),
+      speed = 3.1 * Math.min(delta, 0.05),
       forward = new THREE.Vector3(
         -Math.sin(this.firstPersonYaw),
         0,
@@ -5743,9 +7568,10 @@ export class Game {
         -Math.sin(this.firstPersonYaw),
       ),
       movement = forward
-        .multiplyScalar((forwardAmount / length) * speed)
-        .add(right.multiplyScalar((rightAmount / length) * speed));
-    const xStep = this.clampFirstPersonPoint(
+        .multiplyScalar((this.firstPersonVelocity.y / length) * speed)
+        .add(right.multiplyScalar((this.firstPersonVelocity.x / length) * speed));
+    const beforeStep = new THREE.Vector2(this.camera.position.x, this.camera.position.z),
+      xStep = this.clampFirstPersonPoint(
       this.camera.position.x + movement.x,
       this.camera.position.z,
     );
@@ -5763,77 +7589,206 @@ export class Game {
     }
     this.camera.position.y = this.firstPersonHeight;
     this.camera.updateMatrixWorld(true);
+    this.footstepDistance += beforeStep.distanceTo(new THREE.Vector2(this.camera.position.x, this.camera.position.z));
+    if (this.footstepDistance >= .72) {
+      this.footstepDistance %= .72;
+      const onRug = this.data.some((item) => ["memoryrug", "roundrug"].includes(item.kind) && Math.hypot(item.x - this.camera.position.x, item.z - this.camera.position.z) < 2.1 * (item.scale ?? 1));
+      void this.sound.play(onRug ? "world.step.rug" : "world.step.wood", { volume: .72 });
+    }
+    this.updateWalkTarget();
+  }
+  private updateWalkTarget() {
+    if (!this.firstPerson) return;
+    this.ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    const hit = this.ray.intersectObjects([...this.items.values()], true)
+      .find((candidate) => candidate.distance <= 2.7);
+    let object: THREE.Object3D | null = hit?.object ?? null;
+    while (object && !object.userData.itemId) object = object.parent;
+    const target = object?.userData.itemId
+      ? this.data.find((item) => item.id === object!.userData.itemId)
+      : undefined;
+    this.walkTarget = target && WalkInteractionEngine.supports(target.kind) ? target : undefined;
+    const button = document.querySelector<HTMLButtonElement>("#walk-interaction");
+    if (!button) return;
+    const prompt = this.walkTarget
+      ? this.walkInteractions.getPrompt(this.walkTarget)
+      : undefined;
+    button.hidden = !prompt;
+    button.disabled = !prompt?.available;
+    if (prompt) button.textContent = `${prompt.actionLabel} · E`;
+  }
+  private useWalkTarget() {
+    if (!this.firstPerson || !this.walkTarget) return;
+    const target = this.walkTarget;
+    const result = this.walkInteractions.interact(target);
+    if (result.status !== "applied") {
+      this.announce(result.announcement);
+      return;
+    }
+    for (const change of result.changes) this.applyWalkInteractionChange(change);
+    this.progression.record({ type: "walk-interaction", objectId: target.id });
+    this.sound.play("ui.confirm");
+    this.announce(result.announcement);
+    this.changed(false);
+    this.updateWalkTarget();
+  }
+  private applyWalkInteractionChange(change: WalkInteractionChange) {
+    const group = this.items.get(change.objectId);
+    if (!group) return;
+    if (change.family === "light") {
+      let light = this.interactionLights.get(change.objectId);
+      if (!light) {
+        light = new THREE.PointLight(0xffbc68, 0, 7, 2);
+        light.position.copy(group.position).add(new THREE.Vector3(0, 2, 0));
+        this.scene.add(light);
+        this.interactionLights.set(change.objectId, light);
+      }
+      light.intensity = change.state === "on" ? 8 : 0;
+    } else if (change.family === "container") {
+      group.userData.interactionOpen = change.state === "open";
+      group.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => {
+          if (material instanceof THREE.MeshStandardMaterial)
+            material.emissiveIntensity = change.state === "open" ? 0.12 : 0;
+        });
+      });
+    } else if (change.family === "seat" && change.state === "seated") {
+      const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(group.quaternion);
+      const point = group.position.clone().addScaledVector(forward, 0.35);
+      this.firstPersonHeight = 1.28;
+      this.camera.position.set(point.x, this.firstPersonHeight, point.z);
+    } else if (change.family === "seat" && change.state === "idle") {
+      this.setFirstPersonHeight(1.68);
+    } else if (change.family === "music") {
+      if (change.state === "playing") void this.sound.startAmbience();
+      else this.sound.stopAmbience(350);
+    }
   }
   private resetCamera() {
     const rects = this.roomRects(true),
       minX = Math.min(...rects.map((rect) => rect.minX)),
       maxX = Math.max(...rects.map((rect) => rect.maxX)),
       minZ = Math.min(...rects.map((rect) => rect.minZ)),
-      maxZ = Math.max(...rects.map((rect) => rect.maxZ)),
-      centerX = (minX + maxX) / 2,
-      centerZ = (minZ + maxZ) / 2,
-      scale = Math.max((maxX - minX) / 14, (maxZ - minZ) / 11);
-    this.camera.position.set(
-      centerX + 12 * scale,
-      10 * Math.min(scale, 1.35),
-      centerZ + 15 * scale,
+      maxZ = Math.max(...rects.map((rect) => rect.maxZ));
+    this.focusCamera.focusBox(
+      new THREE.Box3(
+        new THREE.Vector3(minX, 0, minZ),
+        new THREE.Vector3(maxX, 6.2, maxZ),
+      ),
+      {
+        viewport: { width: innerWidth, height: innerHeight },
+        insets: this.cameraSafeInsets(),
+        direction: new THREE.Vector3(1, 0.72, 1.18),
+        padding: 1.1,
+        minDistance: 9,
+        maxDistance: 42,
+      },
     );
-    this.controls.target.set(centerX, 2.3, centerZ);
-    this.controls.update();
   }
-  private audio(type: string) {
-    if (type === "begin") {
-      this.ambience.loop = true;
-      this.ambience.volume = 0.16;
-      if (!this.muted) void this.ambience.play().catch(() => {});
-    }
-    if (this.muted) return;
-    const A = window.AudioContext || (window as any).webkitAudioContext;
-    if (!A) return;
-    const ctx = new A();
-    if (type === "camera") {
-      const length = Math.floor(ctx.sampleRate * 0.09),
-        buffer = ctx.createBuffer(1, length, ctx.sampleRate),
-        samples = buffer.getChannelData(0),
-        source = ctx.createBufferSource(),
-        filter = ctx.createBiquadFilter(),
-        gain = ctx.createGain();
-      for (let i = 0; i < length; i++)
-        samples[i] = (Math.random() * 2 - 1) * (1 - i / length);
-      source.buffer = buffer;
-      filter.type = "bandpass";
-      filter.frequency.value = 1450;
-      filter.Q.value = 0.7;
-      gain.gain.setValueAtTime(0.14, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1);
-      source.connect(filter).connect(gain).connect(ctx.destination);
-      source.start();
-      source.stop(ctx.currentTime + 0.1);
+  private setCameraPreset(preset: "top" | "front") {
+    const bounds = new THREE.Box3(
+      new THREE.Vector3(-this.roomWidth / 2, 0, -this.roomDepth / 2),
+      new THREE.Vector3(this.roomWidth / 2, 6.2, this.roomDepth / 2),
+    );
+    this.focusCamera.focusBox(bounds, {
+      viewport: { width: innerWidth, height: innerHeight },
+      insets: this.cameraSafeInsets(),
+      direction: preset === "top"
+        ? new THREE.Vector3(0.001, 1, 0.001)
+        : new THREE.Vector3(0, 0.18, 1),
+      padding: 1.15,
+      minDistance: 8,
+      maxDistance: 42,
+    });
+    this.audio("camera");
+    this.announce(preset === "top" ? "Top floor-plan view." : "Front room view.");
+  }
+  private cameraSafeInsets() {
+    const compact = this.compactToolsQuery.matches;
+    const sidePanelOpen = ["catalog", "room-panel", "file-panel"].some((id) =>
+      this.surfaces.isOpen(id),
+    );
+    return {
+      top: compact ? 92 : 126,
+      right: compact ? 16 : 32,
+      bottom: compact ? 178 : 142,
+      left: compact ? 16 : sidePanelOpen ? 468 : 32,
+    };
+  }
+  private focusSelectedObject() {
+    if (!this.selected) {
+      this.announce("Select an object first, then focus it.");
       return;
     }
-    const o = ctx.createOscillator(),
-      g = ctx.createGain();
-    o.type = "sine";
-    o.frequency.value = type === "remove" ? 190 : type === "place" ? 420 : 620;
-    g.gain.setValueAtTime(0.0001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.045, ctx.currentTime + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.32);
-    o.connect(g).connect(ctx.destination);
-    o.start();
-    o.stop(ctx.currentTime + 0.35);
+    const box = new THREE.Box3().setFromObject(this.selected);
+    if (box.isEmpty()) return;
+    this.focusCamera.focusBox(box, {
+      viewport: { width: innerWidth, height: innerHeight },
+      insets: this.cameraSafeInsets(),
+      direction: this.camera.position.clone().sub(this.controls.target),
+      padding: 1.4,
+      minDistance: 4.2,
+      maxDistance: 18,
+    });
+    this.audio("camera");
+    this.announce(`Focused ${this.findData()?.name ?? "selected object"}.`);
+  }
+  private audio(type: string) {
+    this.sound.setMuted(this.muted);
+    if (this.muted) return;
+    if (type === "begin") {
+      void this.sound.unlock().then(() => this.sound.startAmbience());
+      return;
+    }
+    const cues: Record<string, string> = {
+      camera: "world.camera",
+      chime: "ui.confirm",
+      place: "world.place",
+      remove: "world.remove",
+      rotate: "world.rotate",
+      invalid: "world.invalid",
+    };
+    void this.sound.play(cues[type] ?? "ui.select");
+  }
+  private applyQuality(recommendation: QualityRecommendation) {
+    this.renderer.shadowMap.enabled = recommendation.shadows;
+    if (this.keyLight) {
+      const size = recommendation.shadowMapSize;
+      if (this.keyLight.shadow.mapSize.x !== size) {
+        this.keyLight.shadow.map?.dispose();
+        this.keyLight.shadow.map = null;
+        this.keyLight.shadow.mapSize.set(size, size);
+        this.keyLight.shadow.needsUpdate = true;
+      }
+    }
+    if (this.dust) {
+      const count = this.dust.geometry.getAttribute("position")?.count ?? 0;
+      this.dust.geometry.setDrawRange(0, Math.max(12, Math.floor(count * recommendation.particleScale)));
+    }
   }
   private update(d: number, e: number) {
     if (d > 0) {
       this.frameTimes.push(d * 1000);
       if (this.frameTimes.length > 120) this.frameTimes.shift();
+      this.quality.recordFrame(d * 1000);
+      if (this.loop.lastWorkMs > 0) {
+        this.frameWorkTimes.push(this.loop.lastWorkMs);
+        if (this.frameWorkTimes.length > 120) this.frameWorkTimes.shift();
+      }
     }
     resizeRenderer(
       this.renderer,
       this.camera,
-      matchMedia("(pointer:coarse)").matches ? 1.35 : 1.7,
+      this.quality.dprLimit,
     );
+    this.updateLightingTransition(d);
     if (this.firstPerson) this.updateFirstPerson(d);
-    else this.controls.update();
+    else {
+      this.focusCamera.update(d);
+      this.controls.update();
+    }
     this.updateRoomWallTransparency();
     if (this.dust) {
       this.dust.rotation.y = e * 0.015;
@@ -5852,6 +7807,10 @@ export class Game {
   private publish() {
     const info = this.renderer.info.render,
       ratios = this.shapeRatios(),
+      orderedFrameTimes = [...this.frameWorkTimes].sort((a, b) => a - b),
+      percentile = (value: number) => orderedFrameTimes.length
+        ? orderedFrameTimes[Math.min(orderedFrameTimes.length - 1, Math.floor((orderedFrameTimes.length - 1) * value))]
+        : 0,
       frameTimeMs = this.frameTimes.length
         ? this.frameTimes.reduce((sum, value) => sum + value, 0) / this.frameTimes.length
         : 0;
@@ -5943,6 +7902,50 @@ export class Game {
         geometries: this.renderer.info.memory.geometries,
         textures: this.renderer.info.memory.textures,
       },
+      performance: {
+        p50FrameMs: percentile(.5),
+        p95FrameMs: percentile(.95),
+        p99FrameMs: percentile(.99),
+        qualityTier: this.quality.recommendation.tier,
+        collisionCells: this.collisionGrid.size,
+      },
     };
+  }
+  private renderGameToText() {
+    const diagnostics = window.__THREE_GAME_DIAGNOSTICS__;
+    return JSON.stringify({
+      coordinateSystem: "Origin is the room center; +x is right, +y is up, +z is toward the viewer.",
+      mode: diagnostics?.state ?? "loading",
+      room: {
+        name: this.roomName,
+        width: this.roomWidth,
+        depth: this.roomDepth,
+        shape: this.roomShape,
+        lighting: this.evening ? "evening" : "afternoon",
+      },
+      player: diagnostics?.player ?? null,
+      camera: diagnostics?.camera ?? null,
+      selectedObjectId: this.selected?.userData.itemId ?? null,
+      placement: diagnostics?.editor.placement ?? null,
+      visibleObjects: this.data.slice(0, 80).map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        name: item.name,
+        position: { x: item.x, y: item.y ?? 0, z: item.z },
+        rotation: item.rot,
+        scale: item.scale ?? 1,
+        locked: Boolean(item.locked),
+        hidden: Boolean(item.hidden),
+      })),
+      objectCount: this.data.length,
+      history: { undo: this.history.length, redo: this.future.length },
+      story: this.activeStoryId ? {
+        id: this.activeStoryId,
+        ...evaluateRoomStory(roomStoryById(this.activeStoryId)!, this.storyState()),
+      } : null,
+      walkInteractions: this.walkInteractions.serialize(),
+      comfort: this.settings.value,
+      performance: diagnostics?.performance ?? null,
+    });
   }
 }

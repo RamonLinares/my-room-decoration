@@ -194,3 +194,4 @@ export function buildArchitecturalExtension(
   }
   return root;
 }
+// Visual contract: docs/art-bible.md — warm storybook proportions, softened edges, shared material families.

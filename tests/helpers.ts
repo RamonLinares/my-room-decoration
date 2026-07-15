@@ -4,7 +4,11 @@ export async function enterRoom(page: Page) {
   const begin = page.getByRole('button', { name: 'Open the door' });
   await expect(begin).toBeFocused();
   await begin.click();
-  await expect(page.locator('#welcome')).toBeHidden();
+  // The postcard deliberately fades with opacity before it is removed from layout.
+  // Playwright's visibility model ignores opacity, so assert the immediate,
+  // user-relevant closed state rather than racing the decorative hide timer.
+  await expect(page.locator('#welcome')).toHaveAttribute('aria-hidden', 'true');
+  await expect(page.locator('#welcome')).toHaveClass(/gone/);
   await expect(page.locator('#open-catalog')).toBeFocused();
 }
 
