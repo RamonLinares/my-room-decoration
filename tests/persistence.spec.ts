@@ -1,8 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+async function openPersistenceHarness(page: import('@playwright/test').Page) {
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => Boolean(window.__MY_ROOM_BROWSER_TEST_MODULES__));
+}
+
 test.describe("versioned room persistence", () => {
   test("migrates legacy room data and preferences exactly once", async ({ page }) => {
-    await page.goto("/");
+    await openPersistenceHarness(page);
     const result = await page.evaluate(async () => {
       localStorage.clear();
       localStorage.setItem(
@@ -18,8 +23,7 @@ test.describe("versioned room persistence", () => {
       localStorage.setItem("my-little-room-placement-hint-v1", "complete");
       localStorage.setItem("my-little-room-walk-hint-v1", "dismissed");
 
-      const moduleUrl = new URL("/src/persistence/index.ts", location.origin).href;
-      const { MyRoomPersistence } = await import(/* @vite-ignore */ moduleUrl) as typeof import("../src/persistence");
+      const { MyRoomPersistence } = window.__MY_ROOM_BROWSER_TEST_MODULES__!;
       const store = new MyRoomPersistence({ dbName: `migration-${crypto.randomUUID()}` });
       const first = await store.migrateLegacyLocalStorage();
       const second = await store.migrateLegacyLocalStorage();
@@ -46,10 +50,9 @@ test.describe("versioned room persistence", () => {
   });
 
   test("creates, coalesces, lists, imports, and cascades room records", async ({ page }) => {
-    await page.goto("/");
+    await openPersistenceHarness(page);
     const result = await page.evaluate(async () => {
-      const moduleUrl = new URL("/src/persistence/index.ts", location.origin).href;
-      const { MyRoomPersistence } = await import(/* @vite-ignore */ moduleUrl) as typeof import("../src/persistence");
+      const { MyRoomPersistence } = window.__MY_ROOM_BROWSER_TEST_MODULES__!;
       let clock = 1_000;
       const store = new MyRoomPersistence({
         dbName: `rooms-${crypto.randomUUID()}`,
@@ -120,10 +123,9 @@ test.describe("versioned room persistence", () => {
   });
 
   test("prunes snapshots and round-trips scrapbook blobs", async ({ page }) => {
-    await page.goto("/");
+    await openPersistenceHarness(page);
     const result = await page.evaluate(async () => {
-      const moduleUrl = new URL("/src/persistence/index.ts", location.origin).href;
-      const { MyRoomPersistence } = await import(/* @vite-ignore */ moduleUrl) as typeof import("../src/persistence");
+      const { MyRoomPersistence } = window.__MY_ROOM_BROWSER_TEST_MODULES__!;
       let clock = 10_000;
       const issues: Array<{ code: string; operation: string }> = [];
       const store = new MyRoomPersistence({

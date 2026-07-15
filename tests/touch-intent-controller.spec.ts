@@ -22,10 +22,10 @@ declare global {
 }
 
 async function installHarness(page: import('@playwright/test').Page) {
-  await page.goto('/');
-  await page.evaluate(async () => {
-    const modulePath = '/src/core/TouchIntentController.ts';
-    const { TouchIntentController } = await import(/* @vite-ignore */ modulePath);
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => Boolean(window.__MY_ROOM_BROWSER_TEST_MODULES__));
+  await page.evaluate(() => {
+    const { TouchIntentController } = window.__MY_ROOM_BROWSER_TEST_MODULES__!;
     const root = document.createElement('div');
     root.innerHTML = `
       <div id="movement-zone"><span id="knob"></span></div>

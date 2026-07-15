@@ -116,6 +116,9 @@ test('keyboard object manager supports selection, movement, transforms, removal,
   const objectButton = objectButtons.nth(objectCount - 1);
   await objectButton.click();
   await expect(objectButton).toHaveAttribute('aria-pressed', 'true');
+  await expect
+    .poll(() => page.evaluate(() => window.__THREE_GAME_DIAGNOSTICS__!.editor.selectedId))
+    .not.toBeNull();
 
   const beforeX = await page.evaluate(
     () => window.__THREE_GAME_DIAGNOSTICS__!.player.position.x,
